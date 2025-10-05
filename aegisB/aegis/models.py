@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from datetime import timedelta
 import uuid
 import os
 
@@ -50,6 +51,7 @@ class EmergencyContact(models.Model):
             if primary_exists:
                 raise ValidationError('User can only have one primary emergency contact.')
             
+# learn 
 
 class ResourceCategory(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -81,13 +83,13 @@ class LearningResource(models.Model):
         ('advanced', 'Advanced'),
     ]
 
-    title = models.CharField(max_length=200)
-    description = models.TextField()
-    content = models.TextField(help_text="Markdown-formatted content")
+    title = models.CharField(max_length=200,blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    content = models.TextField(blank=True, null=True,help_text="Markdown-formatted content")
     resource_type = models.CharField(max_length=20, choices=RESOURCE_TYPES)
     difficulty = models.CharField(max_length=20, choices=DIFFICULTY_LEVELS, default='beginner')
-    duration = models.CharField(max_length=50, help_text="e.g., '5 min read', '10 min video'")
-    icon = models.CharField(max_length=50, default='📄')
+    duration = models.CharField(blank=True, null=True, max_length=50, help_text="e.g., '5 min read', '10 min video'", )
+    icon = models.CharField(max_length=50, default='📄',blank=True, null=True)
     category = models.ForeignKey(ResourceCategory, on_delete=models.SET_NULL, null=True, related_name='resources')
     video_url = models.URLField(blank=True, null=True)
     thumbnail = models.ImageField(upload_to='resource_thumbnails/', blank=True, null=True)
@@ -155,7 +157,7 @@ class UserProgress(models.Model):
     progress_percentage = models.IntegerField(default=0)
     last_accessed = models.DateTimeField(auto_now=True)
     bookmarked = models.BooleanField(default=False)
-    time_spent = models.IntegerField(default=0)  # in seconds
+    time_spent = models.IntegerField(default=0) 
 
     class Meta:
         unique_together = ['user', 'resource']
@@ -255,7 +257,7 @@ class IncidentMedia(models.Model):
 class IncidentUpdate(models.Model):
     incident = models.ForeignKey(IncidentReport, on_delete=models.CASCADE, related_name='updates')
     status = models.CharField(max_length=20, choices=IncidentReport.STATUS_CHOICES)
-    message = models.TextField()
+    message = models.TextField(blank=True,null=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -264,3 +266,154 @@ class IncidentUpdate(models.Model):
 
     def __str__(self):
         return f"Update for {self.incident.title}"
+    
+
+# safety check 
+
+class SafetyCheckSettings(models.Model):
+    FREQUENCY_CHOICES = [
+        (30, '30 minutes'),
+        (60, '1 hour'),
+        (120, '2 hours'),
+        (240, '4 hours'),
+        (480, '8 hours'),
+    ]
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='safety_check_settings')
+    is_enabled = models.BooleanField(default=True)
+    check_in_frequency = models.IntegerField(choices=FREQUENCY_CHOICES, default=60)
+    notify_emergency_contacts = models.BooleanField(default=True)
+    share_location = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "Safety Check Settings"
+
+    def __str__(self):
+        return f"Safety Settings - {self.user.email}"
+
+class SafetyCheckIn(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('safe', 'Safe'),
+        ('missed', 'Missed'),
+        ('emergency', 'Emergency'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='safety_check_ins')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    scheduled_at = models.DateTimeField()
+    responded_at = models.DateTimeField(null=True, blank=True)
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lng = models.FloatField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-scheduled_at']
+
+    def __str__(self):
+        return f"Check-in - {self.user.email} - {self.scheduled_at}"
+
+    def is_overdue(self):
+        if self.status != 'pending':
+            return False
+        return timezone.now() > self.scheduled_at + timedelta(minutes=15)
+
+    def mark_safe(self, location_lat=None, location_lng=None, notes=''):
+        self.status = 'safe'
+        self.responded_at = timezone.now()
+        if location_lat and location_lng:
+            self.location_lat = location_lat
+            self.location_lng = location_lng
+        self.notes = notes
+        self.save()
+
+    def mark_missed(self):
+        self.status = 'missed'
+        self.save()
+
+class EmergencyAlert(models.Model):
+    ALERT_TYPES = [
+        ('test', 'Test Alert'),
+        ('manual', 'Manual Alert'),
+        ('auto', 'Automatic Alert'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='emergency_alerts')
+    alert_type = models.CharField(max_length=20, choices=ALERT_TYPES)
+    message = models.TextField()
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lng = models.FloatField(null=True, blank=True)
+    sent_to_contacts = models.BooleanField(default=False)
+    sent_to_authorities = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Alert - {self.user.email} - {self.alert_type}"
+    
+
+# silent capture or evedence
+
+class VideoEvidence(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='video_evidence')
+    title = models.CharField(max_length=255, default='Silently Captured Evidence')
+    video_file = models.FileField(upload_to='video_evidence/%Y/%m/%d/')
+    location_lat = models.FloatField(null=True, blank=True)
+    location_lng = models.FloatField(null=True, blank=True)
+    location_address = models.TextField(blank=True)
+    recorded_at = models.DateTimeField(default=timezone.now)
+    is_anonymous = models.BooleanField(default=False)
+    duration_seconds = models.IntegerField(default=0)
+    file_size = models.BigIntegerField(default=0)  # in bytes
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-recorded_at']
+        verbose_name_plural = "Video Evidence"
+
+    def __str__(self):
+        return f"{self.title} - {self.user.email} - {self.recorded_at.strftime('%Y-%m-%d %H:%M')}"
+
+    def clean(self):
+        # Validate video file size (max 100MB)
+        if self.file_size > 100 * 1024 * 1024:  # 100MB in bytes
+            raise ValidationError('Video file size cannot exceed 100MB')
+
+    def save(self, *args, **kwargs):
+        # Auto-set file size if video_file exists
+        if self.video_file and not self.file_size:
+            try:
+                self.file_size = self.video_file.size
+            except (ValueError, OSError):
+                pass
+        super().save(*args, **kwargs)
+
+    def get_file_size_display(self):
+        """Convert bytes to human readable format"""
+        if self.file_size < 1024:
+            return f"{self.file_size} B"
+        elif self.file_size < 1024 * 1024:
+            return f"{self.file_size / 1024:.1f} KB"
+        elif self.file_size < 1024 * 1024 * 1024:
+            return f"{self.file_size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{self.file_size / (1024 * 1024 * 1024):.1f} GB"
+
+    def get_duration_display(self):
+        """Convert seconds to human readable format"""
+        if self.duration_seconds < 60:
+            return f"{self.duration_seconds}s"
+        elif self.duration_seconds < 3600:
+            minutes = self.duration_seconds // 60
+            seconds = self.duration_seconds % 60
+            return f"{minutes}m {seconds}s"
+        else:
+            hours = self.duration_seconds // 3600
+            minutes = (self.duration_seconds % 3600) // 60
+            return f"{hours}h {minutes}m"

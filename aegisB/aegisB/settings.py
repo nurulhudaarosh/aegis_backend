@@ -28,6 +28,12 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://192.168.68.106:3000",
+    "http://192.168.0.155:3000",
+    "http://127.0.0.1:3000",
+]
 # Application definition
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -44,6 +50,7 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'accounts',
     'aegis',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
@@ -54,6 +61,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'aegisB.urls'
@@ -93,6 +101,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DATETIME_FORMAT': "%Y-%m-%d %H:%M:%S",
 }
 # DATABASES = {
 #     'default': {
@@ -129,7 +138,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Dhaka'
 
 USE_I18N = True
 
@@ -149,3 +158,16 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Custom user model
 AUTH_USER_MODEL = 'accounts.CustomUser'
+
+
+FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
+
+# Optional: Add file type restrictions
+ALLOWED_FILE_EXTENSIONS = {
+    'photo': ['.jpg', '.jpeg', '.png', '.heic'],
+    'video': ['.mp4', '.mov', '.avi', '.mkv'],
+    'audio': ['.mp3', '.m4a', '.wav', '.aac']
+}
+
+CORS_ALLOW_CREDENTIALS = True

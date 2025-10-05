@@ -58,9 +58,9 @@ class CustomUser(AbstractUser):
         return self.full_name
 
     def clean(self):
-        # Validate that agent_id is provided for agent users
+
         if self.user_type == 'agent' and not self.agent_id:
             raise ValidationError({'agent_id': 'Agent ID is required for agent users.'})
-        # Validate that agent_id is not provided for regular users
+
         if self.user_type == 'user' and self.agent_id:
             raise ValidationError({'agent_id': 'Agent ID should not be provided for regular users.'})

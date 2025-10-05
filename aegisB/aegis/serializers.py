@@ -2,9 +2,9 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from .models import (
-    IncidentUpdate, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
-    LearningResource, UserProgress, UserQuizAttempt,EmergencyContact,
-    IncidentReport, IncidentMedia,
+    EmergencyAlert, IncidentUpdate, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
+    LearningResource, SafetyCheckIn, SafetyCheckSettings, UserProgress, UserQuizAttempt,EmergencyContact,
+    IncidentReport, IncidentMedia, VideoEvidence,
 
 )
 
@@ -96,7 +96,7 @@ class ExternalLinkSerializer(serializers.ModelSerializer):
 class QuizOptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = QuizOption
-        fields = ('id', 'text', 'order')
+        fields = ('id', 'text','is_correct','order')
 
 
 class QuizQuestionSerializer(serializers.ModelSerializer):
@@ -120,7 +120,7 @@ class LearningResourceSerializer(serializers.ModelSerializer):
             'id', 'title', 'description', 'content', 'resource_type', 'difficulty',
             'duration', 'icon', 'category', 'category_name', 'video_url', 'thumbnail',
             'external_links', 'quiz_questions', 'user_progress', 'is_bookmarked',
-            'created_at', 'updated_at'
+            'created_at', 'updated_at', 'is_published'
         )
 
     def get_user_progress(self, obj):
@@ -197,6 +197,22 @@ class IncidentUpdateSerializer(serializers.ModelSerializer):
         fields = ('id', 'status', 'message', 'created_by_name', 'created_at')
         read_only_fields = ('id', 'created_at')
 
+    def create(self, validated_data):
+        request = self.context.get('request')
+        incident = self.context.get('incident') 
+        print(request,incident)
+        if not incident:
+            raise serializers.ValidationError("Incident context missing.")
+        validated_data['incident'] = incident
+
+        if request and hasattr(request, 'user') and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+        else:
+            raise serializers.ValidationError("Authenticated user required to create update.")
+        
+        return super().create(validated_data)
+
+
 class IncidentReportSerializer(serializers.ModelSerializer):
     media = IncidentMediaSerializer(many=True, read_only=True)
     updates = IncidentUpdateSerializer(many=True, read_only=True)
@@ -237,3 +253,123 @@ class MediaUploadSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'incident': {'required': False}
         }
+
+
+
+# safety check
+
+class SafetyCheckSettingsSerializer(serializers.ModelSerializer):
+    frequency_display = serializers.CharField(source='get_check_in_frequency_display', read_only=True)
+
+    class Meta:
+        model = SafetyCheckSettings
+        fields = (
+            'id', 'is_enabled', 'check_in_frequency', 'frequency_display',
+            'notify_emergency_contacts', 'share_location', 'created_at', 'updated_at'
+        )
+
+class SafetyCheckInSerializer(serializers.ModelSerializer):
+    is_overdue = serializers.BooleanField(read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = SafetyCheckIn
+        fields = (
+            'id', 'user', 'user_email', 'status', 'scheduled_at', 'responded_at',
+            'location_lat', 'location_lng', 'notes', 'is_overdue', 'created_at'
+        )
+        read_only_fields = ('id', 'user', 'created_at')
+
+class EmergencyAlertSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    alert_type_display = serializers.CharField(source='get_alert_type_display', read_only=True)
+
+    class Meta:
+        model = EmergencyAlert
+        fields = (
+            'id', 'user', 'user_email', 'alert_type', 'alert_type_display',
+            'message', 'location_lat', 'location_lng', 'sent_to_contacts',
+            'sent_to_authorities', 'created_at'
+        )
+        read_only_fields = ('id', 'user', 'created_at')
+
+class SafetyStatisticsSerializer(serializers.Serializer):
+    total_check_ins = serializers.IntegerField()
+    successful_check_ins = serializers.IntegerField()
+    missed_check_ins = serializers.IntegerField()
+    emergency_alerts = serializers.IntegerField()
+    response_rate = serializers.FloatField()
+    last_check_in = serializers.DateTimeField(allow_null=True)
+    next_check_in = serializers.DateTimeField(allow_null=True)
+
+class ManualCheckInSerializer(serializers.Serializer):
+    location_lat = serializers.FloatField(required=False, allow_null=True)
+    location_lng = serializers.FloatField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+class TestAlertSerializer(serializers.Serializer):
+    message = serializers.CharField(default="This is a test emergency alert")
+
+
+
+# silent capture or evidence
+
+
+class VideoEvidenceSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    file_size_display = serializers.CharField(source='get_file_size_display', read_only=True)
+    duration_display = serializers.CharField(source='get_duration_display', read_only=True)
+    video_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VideoEvidence
+        fields = (
+            'id', 'user', 'user_email', 'title', 'video_file', 'video_url',
+            'location_lat', 'location_lng', 'location_address', 'recorded_at',
+            'is_anonymous', 'duration_seconds', 'duration_display',
+            'file_size', 'file_size_display', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'user', 'created_at', 'updated_at', 'file_size')
+
+    def get_video_url(self, obj):
+        if obj.video_file:
+            return obj.video_file.url
+        return None
+
+class VideoEvidenceCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoEvidence
+        fields = (
+            'title', 'location_lat', 'location_lng', 'location_address',
+            'recorded_at', 'is_anonymous', 'duration_seconds'
+        )
+
+    def validate_duration_seconds(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Duration cannot be negative")
+        if value > 3600:  # 1 hour max
+            raise serializers.ValidationError("Video duration cannot exceed 1 hour")
+        return value
+
+class VideoUploadSerializer(serializers.Serializer):
+    video_file = serializers.FileField(
+        max_length=100 * 1024 * 1024,  # 100MB max
+        allow_empty_file=False
+    )
+    media_type = serializers.CharField(default='video')
+
+    def validate_video_file(self, value):
+        # Check file extension
+        allowed_extensions = ['mp4', 'mov', 'avi', 'mkv', 'webm']
+        file_extension = value.name.split('.')[-1].lower()
+        
+        if file_extension not in allowed_extensions:
+            raise serializers.ValidationError(
+                f"Unsupported video format. Allowed formats: {', '.join(allowed_extensions)}"
+            )
+
+        # Check content type
+        if not value.content_type.startswith('video/'):
+            raise serializers.ValidationError("Uploaded file must be a video")
+
+        return value

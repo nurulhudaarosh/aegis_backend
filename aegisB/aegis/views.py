@@ -6,26 +6,40 @@ from rest_framework.views import APIView
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Sum
 from django.core.exceptions import ValidationError
 from django.contrib.auth import get_user_model
+from datetime import timedelta
+
 
 
 from .models import (
+    EmergencyAlert,
     EmergencyContact,
+    ExternalLink,
     ResourceCategory,
     LearningResource,
+    SafetyCheckIn,
+    SafetyCheckSettings,
     UserProgress,
     UserQuizAttempt,
     QuizQuestion,
     QuizOption,
     IncidentReport, 
     IncidentUpdate,
+    VideoEvidence,
 )
 
 from .serializers import (
+    EmergencyAlertSerializer,
     EmergencyContactSerializer, 
     EmergencyContactCreateSerializer,
+    IncidentUpdateSerializer,
+    ManualCheckInSerializer,
+    SafetyCheckInSerializer,
+    SafetyCheckSettingsSerializer,
+    SafetyStatisticsSerializer,
+    TestAlertSerializer,
     UserWithContactsSerializer,
     PhoneLookupSerializer,
     UserLookupSerializer,
@@ -40,6 +54,9 @@ from .serializers import (
     IncidentReportSerializer,
     IncidentReportCreateSerializer,
     MediaUploadSerializer,
+    VideoEvidenceCreateSerializer,
+    VideoEvidenceSerializer,
+    VideoUploadSerializer,
 )
 
 User = get_user_model()
@@ -223,7 +240,10 @@ class LearningResourceListView(ListAPIView):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        queryset = LearningResource.objects.filter(is_published=True)
+        if(self.request.user.user_type == 'controller') :
+            queryset = LearningResource.objects.all()
+        else :
+            queryset = LearningResource.objects.filter(is_published=True)
         
         category = self.request.query_params.get('category')
         if category and category.lower() != 'all':
@@ -259,7 +279,11 @@ class LearningResourceListView(ListAPIView):
 class LearningResourceDetailView(RetrieveAPIView):
     serializer_class = LearningResourceSerializer
     permission_classes = [AllowAny]
-    queryset = LearningResource.objects.filter(is_published=True)
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_authenticated and getattr(user, 'user_type', None) == 'controller':
+            return LearningResource.objects.all()
+        return LearningResource.objects.filter(is_published=True)
     lookup_field = 'id'
 
     def get_serializer_context(self):
@@ -306,16 +330,23 @@ def toggle_bookmark(request, resource_id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def submit_quiz(request, resource_id):
-    resource = get_object_or_404(LearningResource, id=resource_id, is_published=True)
-    
+    if(request.user.user_type == 'controller') :
+        resource = get_object_or_404(LearningResource, id=resource_id)
+    else :
+        resource = get_object_or_404(LearningResource, id=resource_id, is_published=True)
+
     if resource.resource_type != 'quiz':
         return Response({'error': 'This resource is not a quiz'}, status=400)
     
     serializer = QuizSubmissionSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+    if not serializer.is_valid():
+        print("Validation errors:", serializer.errors)  
+        return Response(serializer.errors, status=400)
+    print('j')
     answers = serializer.validated_data['answers']
     time_spent = serializer.validated_data['time_spent']
     
+
     # Fetch all questions and options once
     questions = {q.id: q for q in resource.quiz_questions.all()}
     options = {o.id: o for o in QuizOption.objects.filter(question__resource=resource)}
@@ -404,6 +435,33 @@ def create_learning_resource(request):
         return Response({'message': 'Learning resource created', 'data': serializer.data}, status=201)
     return Response(serializer.errors, status=400)
 
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def toggle_visibility(request, resource_id):
+    resource = get_object_or_404(LearningResource, id=resource_id)
+    
+    if resource.is_published :
+        resource.is_published = False
+    else :
+        resource.is_published = True
+    resource.save()
+    
+    return Response({
+        'message': 'visibility updated successfully'
+    })
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def learning_resource_delete(request, id):
+    resource = get_object_or_404(LearningResource, id=id)
+
+    if request.user.user_type != 'controller':
+        return Response({'detail': 'Not authorized to delete this resource.'}, status=403)
+
+    resource.delete()
+    return Response({'message': 'Deleted successfully'}, status=204)
+
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -438,6 +496,213 @@ def create_quiz_option(request, question_id):
     return Response(serializer.errors, status=400)
 
 
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_learning_resource(request, resource_id):
+    try:
+        resource = get_object_or_404(LearningResource, id=resource_id)
+        
+        # Check if user has permission to update (you can add more specific permissions)
+        # For example, only allow authors or admins to update
+        
+        serializer = LearningResourceSerializer(
+            resource, 
+            data=request.data, 
+            partial=True,  # Allow partial updates
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Resource updated successfully',
+                'data': serializer.data
+            }, status=200)
+        
+        return Response(serializer.errors, status=400)
+        
+    except LearningResource.DoesNotExist:
+        return Response({'error': 'Resource not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_quiz_question(request, question_id):
+    try:
+        question = get_object_or_404(QuizQuestion, id=question_id)
+        
+        serializer = QuizQuestionSerializer(
+            question, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Question updated successfully',
+                'data': serializer.data
+            }, status=200)
+        
+        return Response(serializer.errors, status=400)
+        
+    except QuizQuestion.DoesNotExist:
+        return Response({'error': 'Question not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_quiz_option(request, option_id):
+
+    try:
+        option = get_object_or_404(QuizOption, id=option_id)
+        
+        serializer = QuizOptionSerializer(
+            option, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Option updated successfully',
+                'data': serializer.data
+            }, status=200)
+        
+        return Response(serializer.errors, status=400)
+        
+    except QuizOption.DoesNotExist:
+        return Response({'error': 'Option not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_resource_category(request, category_id):
+    try:
+        category = get_object_or_404(ResourceCategory, id=category_id)
+        
+        serializer = ResourceCategorySerializer(
+            category, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Category updated successfully',
+                'data': serializer.data
+            }, status=200)
+        
+        return Response(serializer.errors, status=400)
+        
+    except ResourceCategory.DoesNotExist:
+        return Response({'error': 'Category not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_external_link(request, link_id):
+    try:
+        link = get_object_or_404(ExternalLink, id=link_id)
+        
+        serializer = ExternalLinkSerializer(
+            link, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'External link updated successfully',
+                'data': serializer.data
+            }, status=200)
+        
+        return Response(serializer.errors, status=400)
+        
+    except ExternalLink.DoesNotExist:
+        return Response({'error': 'External link not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_learning_resource(request, resource_id):
+
+    try:
+        resource = get_object_or_404(LearningResource, id=resource_id)
+        resource.delete()
+        return Response({'message': 'Resource deleted successfully'}, status=200)
+    except LearningResource.DoesNotExist:
+        return Response({'error': 'Resource not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_quiz_question(request, question_id):
+
+    try:
+        question = get_object_or_404(QuizQuestion, id=question_id)
+        question.delete()
+        return Response({'message': 'Question deleted successfully'}, status=200)
+    except QuizQuestion.DoesNotExist:
+        return Response({'error': 'Question not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_quiz_option(request, option_id):
+    try:
+        option = get_object_or_404(QuizOption, id=option_id)
+        option.delete()
+        return Response({'message': 'Option deleted successfully'}, status=200)
+    except QuizOption.DoesNotExist:
+        return Response({'error': 'Option not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_resource_category(request, category_id):
+
+    try:
+        category = get_object_or_404(ResourceCategory, id=category_id)
+        category.delete()
+        return Response({'message': 'Category deleted successfully'}, status=200)
+    except ResourceCategory.DoesNotExist:
+        return Response({'error': 'Category not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_external_link(request, link_id):
+
+    try:
+        link = get_object_or_404(ExternalLink, id=link_id)
+        link.delete()
+        return Response({'message': 'External link deleted successfully'}, status=200)
+    except ExternalLink.DoesNotExist:
+        return Response({'error': 'External link not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
 
 
 # report 
@@ -481,8 +746,7 @@ class IncidentReportListView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        return IncidentReport.objects.filter(user=user).prefetch_related('media', 'updates').order_by('-created_at')
+        return IncidentReport.objects.all().prefetch_related('media', 'updates').order_by('-created_at')
 
 class IncidentReportDetailView(RetrieveAPIView):
     serializer_class = IncidentReportSerializer
@@ -490,8 +754,7 @@ class IncidentReportDetailView(RetrieveAPIView):
     lookup_field = 'id'
 
     def get_queryset(self):
-        user = self.request.user
-        return IncidentReport.objects.filter(user=user).prefetch_related('media', 'updates')
+        return IncidentReport.objects.all().prefetch_related('media', 'updates')
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -517,19 +780,19 @@ def upload_incident_media(request, incident_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def incident_statistics(request):
-    user = request.user
-    total_reports = IncidentReport.objects.filter(user=user).count()
+
+    total_reports = IncidentReport.objects.all().count()
     
     status_counts = {
-        'submitted': IncidentReport.objects.filter(user=user, status='submitted').count(),
-        'under_review': IncidentReport.objects.filter(user=user, status='under_review').count(),
-        'resolved': IncidentReport.objects.filter(user=user, status='resolved').count(),
-        'dismissed': IncidentReport.objects.filter(user=user, status='dismissed').count(),
+        'submitted': IncidentReport.objects.filter(status='submitted').count(),
+        'under_review': IncidentReport.objects.filter(status='under_review').count(),
+        'resolved': IncidentReport.objects.filter(status='resolved').count(),
+        'dismissed': IncidentReport.objects.filter(status='dismissed').count(),
     }
     
     type_counts = {
         incident_type: IncidentReport.objects.filter(
-            user=user, incident_type=incident_type
+            incident_type=incident_type
         ).count()
         for incident_type, _ in IncidentReport.INCIDENT_TYPES
     }
@@ -539,16 +802,371 @@ def incident_statistics(request):
         'status_counts': status_counts,
         'type_counts': type_counts,
         'last_submission': IncidentReport.objects.filter(
-            user=user
         ).order_by('-created_at').first().created_at if total_reports > 0 else None
     })
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def recent_incidents(request):
-    incidents = IncidentReport.objects.filter(
-        user=request.user
-    ).order_by('-created_at')[:5]
+    incidents = IncidentReport.objects.all().order_by('-created_at')[:5]
     
     serializer = IncidentReportSerializer(incidents, many=True)
     return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def update_incident_status(request, incident_id):
+    try:
+        incidentReport = IncidentReport.objects.get(id=incident_id)
+    except IncidentReport.DoesNotExist:
+        return Response({'error': 'Incident report not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = IncidentUpdateSerializer(
+        data=request.data,
+        context={'request': request, 'incident': incidentReport}
+    )
+
+    if serializer.is_valid():
+        update = serializer.save(
+            incident=incidentReport
+        )
+        # Update incident status
+        incidentReport.status = serializer.validated_data['status']
+        if 'priority' in request.data:
+            print(request.data)
+            incidentReport.priority = request.data['priority']
+        incidentReport.save()
+        return Response(IncidentUpdateSerializer(update).data, status=status.HTTP_200_OK)
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# safety check
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def safety_settings(request):
+    try:
+        settings = SafetyCheckSettings.objects.get(user=request.user)
+    except SafetyCheckSettings.DoesNotExist:
+        settings = SafetyCheckSettings.objects.create(user=request.user)
+
+    if request.method == 'GET':
+        serializer = SafetyCheckSettingsSerializer(settings)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        serializer = SafetyCheckSettingsSerializer(settings, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def manual_check_in(request):
+    serializer = ManualCheckInSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Create a check-in record
+    check_in = SafetyCheckIn.objects.create(
+        user=request.user,
+        status='safe',
+        scheduled_at=timezone.now(),
+        responded_at=timezone.now(),
+        location_lat=serializer.validated_data.get('location_lat'),
+        location_lng=serializer.validated_data.get('location_lng'),
+        notes=serializer.validated_data.get('notes', '')
+    )
+
+    # Schedule next check-in based on user settings
+    try:
+        settings = SafetyCheckSettings.objects.get(user=request.user)
+        if settings.is_enabled:
+            next_check_in = timezone.now() + timedelta(minutes=settings.check_in_frequency)
+            SafetyCheckIn.objects.create(
+                user=request.user,
+                status='pending',
+                scheduled_at=next_check_in
+            )
+    except SafetyCheckSettings.DoesNotExist:
+        pass
+
+    return Response({
+        'message': 'Safety check-in recorded successfully',
+        'check_in': SafetyCheckInSerializer(check_in).data
+    })
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def test_emergency_alert(request):
+    serializer = TestAlertSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Create test alert
+    alert = EmergencyAlert.objects.create(
+        user=request.user,
+        alert_type='test',
+        message=serializer.validated_data['message']
+    )
+
+    # Here you would integrate with your notification service (Twilio, Firebase, etc.)
+    # For now, we'll just return success
+    print('alert success')
+
+    return Response({
+        'message': 'Test emergency alert sent successfully',
+        'alert': EmergencyAlertSerializer(alert).data
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def safety_statistics(request):
+    # Calculate statistics for the last 30 days
+    thirty_days_ago = timezone.now() - timedelta(days=30)
+
+    total_check_ins = SafetyCheckIn.objects.filter(
+        user=request.user,
+        created_at__gte=thirty_days_ago
+    ).count()
+
+    successful_check_ins = SafetyCheckIn.objects.filter(
+        user=request.user,
+        status='safe',
+        created_at__gte=thirty_days_ago
+    ).count()
+
+    missed_check_ins = SafetyCheckIn.objects.filter(
+        user=request.user,
+        status='missed',
+        created_at__gte=thirty_days_ago
+    ).count()
+
+    emergency_alerts = EmergencyAlert.objects.filter(
+        user=request.user,
+        created_at__gte=thirty_days_ago
+    ).count()
+
+    response_rate = (successful_check_ins / total_check_ins * 100) if total_check_ins > 0 else 100
+
+    last_check_in = SafetyCheckIn.objects.filter(
+        user=request.user,
+        status='safe'
+    ).order_by('-responded_at').first()
+
+    next_check_in = SafetyCheckIn.objects.filter(
+        user=request.user,
+        status='pending'
+    ).order_by('scheduled_at').first()
+
+    statistics = {
+        'total_check_ins': total_check_ins,
+        'successful_check_ins': successful_check_ins,
+        'missed_check_ins': missed_check_ins,
+        'emergency_alerts': emergency_alerts,
+        'response_rate': round(response_rate, 1),
+        'last_check_in': last_check_in.responded_at if last_check_in else None,
+        'next_check_in': next_check_in.scheduled_at if next_check_in else None
+    }
+
+    serializer = SafetyStatisticsSerializer(statistics)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_in_history(request):
+    check_ins = SafetyCheckIn.objects.filter(user=request.user).order_by('-scheduled_at')[:20]
+    serializer = SafetyCheckInSerializer(check_ins, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def alert_history(request):
+    alerts = EmergencyAlert.objects.filter(user=request.user).order_by('-created_at')[:20]
+    serializer = EmergencyAlertSerializer(alerts, many=True)
+    return Response(serializer.data)
+
+
+# silent capture 
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_video_evidence(request):
+    """
+    Create a new video evidence record
+    """
+    serializer = VideoEvidenceCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        # Create the video evidence record
+        evidence = VideoEvidence.objects.create(
+            user=request.user,
+            **serializer.validated_data
+        )
+        
+        full_serializer = VideoEvidenceSerializer(evidence)
+        return Response({
+            'message': 'Video evidence record created successfully',
+            'evidence': full_serializer.data,
+            'evidence_id': evidence.id
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Failed to create evidence record: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_video_file(request, evidence_id):
+    """
+    Upload video file for an existing evidence record
+    """
+    try:
+        evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
+    except VideoEvidence.DoesNotExist:
+        return Response(
+            {'error': 'Video evidence record not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # Check if video already exists
+    if evidence.video_file:
+        return Response(
+            {'error': 'Video file already uploaded for this evidence'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    file_serializer = VideoUploadSerializer(data=request.data)
+    if not file_serializer.is_valid():
+        return Response(file_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        # Save the video file
+        evidence.video_file = file_serializer.validated_data['video_file']
+        evidence.file_size = evidence.video_file.size
+        
+        # Try to extract duration from filename or metadata if available
+        # This is a placeholder - you might want to use a video processing library
+        # like moviepy or opencv to get actual duration
+        if not evidence.duration_seconds:
+            evidence.duration_seconds = 0  # Default, should be set by client
+        
+        evidence.save()
+        
+        full_serializer = VideoEvidenceSerializer(evidence)
+        return Response({
+            'message': 'Video file uploaded successfully',
+            'evidence': full_serializer.data
+        })
+        
+    except Exception as e:
+        # Clean up if upload fails
+        if evidence.video_file:
+            try:
+                evidence.video_file.delete(save=False)
+            except:
+                pass
+        return Response(
+            {'error': f'Failed to upload video file: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_video_evidence(request):
+    """
+    Get all video evidence for the current user
+    """
+    evidence = VideoEvidence.objects.filter(user=request.user).order_by('-recorded_at')
+    
+    # Optional filters
+    is_anonymous = request.query_params.get('is_anonymous')
+    if is_anonymous is not None:
+        evidence = evidence.filter(is_anonymous=is_anonymous.lower() == 'true')
+    
+    date_from = request.query_params.get('date_from')
+    if date_from:
+        evidence = evidence.filter(recorded_at__date__gte=date_from)
+    
+    date_to = request.query_params.get('date_to')
+    if date_to:
+        evidence = evidence.filter(recorded_at__date__lte=date_to)
+    
+    serializer = VideoEvidenceSerializer(evidence, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_video_evidence(request, evidence_id):
+    """
+    Get specific video evidence details
+    """
+    try:
+        evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
+        serializer = VideoEvidenceSerializer(evidence)
+        return Response(serializer.data)
+    except VideoEvidence.DoesNotExist:
+        return Response(
+            {'error': 'Video evidence not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_video_evidence(request, evidence_id):
+    """
+    Delete video evidence (including the video file)
+    """
+    try:
+        evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
+        
+        # Delete the video file from storage
+        if evidence.video_file:
+            evidence.video_file.delete(save=False)
+        
+        evidence.delete()
+        
+        return Response({
+            'message': 'Video evidence deleted successfully'
+        }, status=status.HTTP_204_NO_CONTENT)
+        
+    except VideoEvidence.DoesNotExist:
+        return Response(
+            {'error': 'Video evidence not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def video_evidence_statistics(request):
+    """
+    Get statistics about user's video evidence
+    """
+    user_evidence = VideoEvidence.objects.filter(user=request.user)
+    
+    total_videos = user_evidence.count()
+    total_duration = sum(evidence.duration_seconds for evidence in user_evidence)
+    total_file_size = sum(evidence.file_size for evidence in user_evidence)
+    anonymous_count = user_evidence.filter(is_anonymous=True).count()
+    
+    # Recent activity (last 7 days)
+    week_ago = timezone.now() - timezone.timedelta(days=7)
+    recent_count = user_evidence.filter(created_at__gte=week_ago).count()
+    
+    return Response({
+        'total_videos': total_videos,
+        'total_duration_seconds': total_duration,
+        'total_duration_display': f"{total_duration // 3600}h {(total_duration % 3600) // 60}m",
+        'total_file_size': total_file_size,
+        'total_file_size_display': f"{total_file_size / (1024 * 1024 * 1024):.2f} GB",
+        'anonymous_count': anonymous_count,
+        'recent_count': recent_count,
+        'average_duration_seconds': total_duration / total_videos if total_videos > 0 else 0
+    })
