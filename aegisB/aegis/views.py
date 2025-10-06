@@ -638,20 +638,6 @@ def update_external_link(request, link_id):
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
-def delete_learning_resource(request, resource_id):
-
-    try:
-        resource = get_object_or_404(LearningResource, id=resource_id)
-        resource.delete()
-        return Response({'message': 'Resource deleted successfully'}, status=200)
-    except LearningResource.DoesNotExist:
-        return Response({'error': 'Resource not found'}, status=404)
-    except Exception as e:
-        return Response({'error': str(e)}, status=500)
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
 def delete_quiz_question(request, question_id):
 
     try:
@@ -1081,10 +1067,10 @@ def upload_video_file(request, evidence_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_video_evidence(request):
-    """
-    Get all video evidence for the current user
-    """
-    evidence = VideoEvidence.objects.filter(user=request.user).order_by('-recorded_at')
+    if request.user.user_type == 'controller' :
+        evidence = VideoEvidence.objects.all().order_by('-recorded_at')
+    else :
+        evidence = VideoEvidence.objects.filter(user=request.user).order_by('-recorded_at')
     
     # Optional filters
     is_anonymous = request.query_params.get('is_anonymous')
@@ -1105,11 +1091,9 @@ def list_video_evidence(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_video_evidence(request, evidence_id):
-    """
-    Get specific video evidence details
-    """
+
     try:
-        evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
+        evidence = VideoEvidence.objects.get(id=evidence_id)
         serializer = VideoEvidenceSerializer(evidence)
         return Response(serializer.data)
     except VideoEvidence.DoesNotExist:
@@ -1121,11 +1105,9 @@ def get_video_evidence(request, evidence_id):
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_video_evidence(request, evidence_id):
-    """
-    Delete video evidence (including the video file)
-    """
+
     try:
-        evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
+        evidence = VideoEvidence.objects.get(id=evidence_id)
         
         # Delete the video file from storage
         if evidence.video_file:
@@ -1146,10 +1128,11 @@ def delete_video_evidence(request, evidence_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def video_evidence_statistics(request):
-    """
-    Get statistics about user's video evidence
-    """
-    user_evidence = VideoEvidence.objects.filter(user=request.user)
+    if request.user.user_type == 'controller' :
+        user_evidence = VideoEvidence.objects.all()
+    else :
+        user_evidence = VideoEvidence.objects.filter(user=request.user)
+    
     
     total_videos = user_evidence.count()
     total_duration = sum(evidence.duration_seconds for evidence in user_evidence)

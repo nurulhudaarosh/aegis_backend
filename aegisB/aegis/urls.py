@@ -27,7 +27,6 @@ urlpatterns = [
     path('learn/resources/create/', views.create_learning_resource, name='create-learning-resource'),
     path('learn/resources/<int:resource_id>/external-links/create/', views.create_external_link, name='create-external-link'),
     path('learn/resources/<int:resource_id>/quiz-questions/create/', views.create_quiz_question, name='create-quiz-question'),
-    path('learn/resources/<int:id>/delete/', views.learning_resource_delete, name='learning-resource-delete'),
     path('learn/resources/<int:resource_id>/update-visibility/', views.toggle_visibility, name='toggle-visibility'),
     path('learn/quiz-questions/<int:question_id>/options/create/', views.create_quiz_option, name='create-quiz-option'),
 
@@ -37,7 +36,7 @@ urlpatterns = [
     path('learn/categories/<int:category_id>/update/', views.update_resource_category, name='update-resource-category'),
     path('learn/external-links/<int:link_id>/update/', views.update_external_link, name='update-external-link'),
     
-    path('learn/resources/<int:resource_id>/delete/', views.delete_learning_resource, name='delete-learning-resource'),
+    path('learn/resources/<int:id>/delete/', views.learning_resource_delete, name='learning-resource-delete'),
     path('learn/quiz-questions/<int:question_id>/delete/', views.delete_quiz_question, name='delete-quiz-question'),
     path('learn/quiz-options/<int:option_id>/delete/', views.delete_quiz_option, name='delete-quiz-option'),
     path('learn/categories/<int:category_id>/delete/', views.delete_resource_category, name='delete-resource-category'),
