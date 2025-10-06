@@ -314,12 +314,12 @@ class TestAlertSerializer(serializers.Serializer):
 
 # silent capture or evidence
 
-
 class VideoEvidenceSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source='user.email', read_only=True)
     file_size_display = serializers.CharField(source='get_file_size_display', read_only=True)
     duration_display = serializers.CharField(source='get_duration_display', read_only=True)
     video_url = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = VideoEvidence
@@ -327,39 +327,62 @@ class VideoEvidenceSerializer(serializers.ModelSerializer):
             'id', 'user', 'user_email', 'title', 'video_file', 'video_url',
             'location_lat', 'location_lng', 'location_address', 'recorded_at',
             'is_anonymous', 'duration_seconds', 'duration_display',
-            'file_size', 'file_size_display', 'created_at', 'updated_at'
+            'file_size', 'file_size_display', 'status', 'type',
+            'created_at', 'updated_at', 'can_edit'
         )
-        read_only_fields = ('id', 'user', 'created_at', 'updated_at', 'file_size')
+        read_only_fields = ('id', 'user', 'created_at', 'updated_at', 'file_size', 'status')
 
     def get_video_url(self, obj):
         if obj.video_file:
             return obj.video_file.url
         return None
 
+    def get_can_edit(self, obj):
+        request = self.context.get('request')
+        if request:
+            return obj.user_can_modify(request.user)
+        return False
+
 class VideoEvidenceCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoEvidence
         fields = (
             'title', 'location_lat', 'location_lng', 'location_address',
-            'recorded_at', 'is_anonymous', 'duration_seconds'
+            'recorded_at', 'is_anonymous', 'duration_seconds', 'type'
         )
 
-    def validate_duration_seconds(self, value):
-        if value < 0:
-            raise serializers.ValidationError("Duration cannot be negative")
-        if value > 3600:  # 1 hour max
-            raise serializers.ValidationError("Video duration cannot exceed 1 hour")
+class VideoEvidenceUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoEvidence
+        fields = (
+            'title', 'location_lat', 'location_lng', 'location_address',
+            'recorded_at', 'is_anonymous', 'duration_seconds', 'type'
+        )
+        read_only_fields = ('status',)
+
+    def validate_type(self, value):
+        if value not in [choice[0] for choice in VideoEvidence.EVIDENCE_TYPE]:
+            raise serializers.ValidationError("Invalid evidence type")
+        return value
+
+class VideoEvidenceStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoEvidence
+        fields = ('status',)
+        
+    def validate_status(self, value):
+        if value not in [choice[0] for choice in VideoEvidence.STATUS_CHOICES]:
+            raise serializers.ValidationError("Invalid status")
         return value
 
 class VideoUploadSerializer(serializers.Serializer):
     video_file = serializers.FileField(
-        max_length=100 * 1024 * 1024,  # 100MB max
+        max_length=100 * 1024 * 1024,
         allow_empty_file=False
     )
     media_type = serializers.CharField(default='video')
 
     def validate_video_file(self, value):
-        # Check file extension
         allowed_extensions = ['mp4', 'mov', 'avi', 'mkv', 'webm']
         file_extension = value.name.split('.')[-1].lower()
         
@@ -368,7 +391,6 @@ class VideoUploadSerializer(serializers.Serializer):
                 f"Unsupported video format. Allowed formats: {', '.join(allowed_extensions)}"
             )
 
-        # Check content type
         if not value.content_type.startswith('video/'):
             raise serializers.ValidationError("Uploaded file must be a video")
 

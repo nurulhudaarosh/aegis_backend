@@ -68,8 +68,11 @@ urlpatterns = [
     path('evidence/<int:evidence_id>/upload/', views.upload_video_file, name='upload-video-file'),
     path('evidence/list/', views.list_video_evidence, name='list-video-evidence'),
     path('evidence/<int:evidence_id>/', views.get_video_evidence, name='get-video-evidence'),
+    path('evidence/<int:evidence_id>/update/', views.update_video_evidence, name='update-video-evidence'),
+    path('evidence/<int:evidence_id>/status/', views.update_evidence_status, name='update-evidence-status'),
     path('evidence/<int:evidence_id>/delete/', views.delete_video_evidence, name='delete-video-evidence'),
     path('evidence/statistics/', views.video_evidence_statistics, name='video-evidence-statistics'),
+
 
 ]
 

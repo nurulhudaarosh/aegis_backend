@@ -3,6 +3,8 @@ from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from datetime import timedelta
+from moviepy import VideoFileClip
+
 import uuid
 import os
 
@@ -360,6 +362,22 @@ class EmergencyAlert(models.Model):
 # silent capture or evedence
 
 class VideoEvidence(models.Model):
+
+    STATUS_CHOICES = [
+        ('verified', 'Verified'),
+        ('pending', 'Pending'),
+        ('under_review', 'Under Review'),
+        ('rejected', 'Rejected'),
+    ]
+
+    EVIDENCE_TYPE = [
+        ('harassment', 'Harassment'),
+        ('robbery', 'Robbery'),
+        ('assault', 'Assault'),
+        ('stalking', 'Stalking'),
+        ('unknown', 'Unknown'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='video_evidence')
     title = models.CharField(max_length=255, default='Silently Captured Evidence')
     video_file = models.FileField(upload_to='video_evidence/%Y/%m/%d/')
@@ -369,9 +387,12 @@ class VideoEvidence(models.Model):
     recorded_at = models.DateTimeField(default=timezone.now)
     is_anonymous = models.BooleanField(default=False)
     duration_seconds = models.IntegerField(default=0)
-    file_size = models.BigIntegerField(default=0)  # in bytes
+    file_size = models.BigIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    type = models.CharField(max_length=20, choices=EVIDENCE_TYPE, default='unknown')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
 
     class Meta:
         ordering = ['-recorded_at']
@@ -381,21 +402,30 @@ class VideoEvidence(models.Model):
         return f"{self.title} - {self.user.email} - {self.recorded_at.strftime('%Y-%m-%d %H:%M')}"
 
     def clean(self):
-        # Validate video file size (max 100MB)
-        if self.file_size > 100 * 1024 * 1024:  # 100MB in bytes
+        if self.file_size > 100 * 1024 * 1024:  
             raise ValidationError('Video file size cannot exceed 100MB')
 
     def save(self, *args, **kwargs):
-        # Auto-set file size if video_file exists
         if self.video_file and not self.file_size:
             try:
                 self.file_size = self.video_file.size
             except (ValueError, OSError):
                 pass
+        
+        if self.video_file and (self.duration_seconds == 0 or not self.duration_seconds):
+            try:
+                video_path = self.video_file.path
+                if os.path.exists(video_path):
+                    clip = VideoFileClip(video_path)
+                    self.duration_seconds = int(clip.duration)
+                    clip.close()
+            except Exception as e:
+                print(f"Could not get video duration: {e}")
+
+        
         super().save(*args, **kwargs)
 
     def get_file_size_display(self):
-        """Convert bytes to human readable format"""
         if self.file_size < 1024:
             return f"{self.file_size} B"
         elif self.file_size < 1024 * 1024:
@@ -406,7 +436,6 @@ class VideoEvidence(models.Model):
             return f"{self.file_size / (1024 * 1024 * 1024):.1f} GB"
 
     def get_duration_display(self):
-        """Convert seconds to human readable format"""
         if self.duration_seconds < 60:
             return f"{self.duration_seconds}s"
         elif self.duration_seconds < 3600:
@@ -417,3 +446,11 @@ class VideoEvidence(models.Model):
             hours = self.duration_seconds // 3600
             minutes = (self.duration_seconds % 3600) // 60
             return f"{hours}h {minutes}m"
+    
+    def user_can_access(self, user):
+        if user.user_type == 'controller':
+            return True
+        return self.user == user
+
+    def user_can_modify(self, user):
+        return self.user == user

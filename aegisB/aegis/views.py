@@ -56,6 +56,8 @@ from .serializers import (
     MediaUploadSerializer,
     VideoEvidenceCreateSerializer,
     VideoEvidenceSerializer,
+    VideoEvidenceStatusSerializer,
+    VideoEvidenceUpdateSerializer,
     VideoUploadSerializer,
 )
 
@@ -240,7 +242,7 @@ class LearningResourceListView(ListAPIView):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        if(self.request.user.user_type == 'controller') :
+        if self.request.user.is_authenticated and self.request.user.user_type == 'controller' :
             queryset = LearningResource.objects.all()
         else :
             queryset = LearningResource.objects.filter(is_published=True)
@@ -981,21 +983,18 @@ def alert_history(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def submit_video_evidence(request):
-    """
-    Create a new video evidence record
-    """
+
     serializer = VideoEvidenceCreateSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        # Create the video evidence record
         evidence = VideoEvidence.objects.create(
             user=request.user,
             **serializer.validated_data
         )
         
-        full_serializer = VideoEvidenceSerializer(evidence)
+        full_serializer = VideoEvidenceSerializer(evidence, context={'request': request})
         return Response({
             'message': 'Video evidence record created successfully',
             'evidence': full_serializer.data,
@@ -1011,9 +1010,7 @@ def submit_video_evidence(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def upload_video_file(request, evidence_id):
-    """
-    Upload video file for an existing evidence record
-    """
+    
     try:
         evidence = VideoEvidence.objects.get(id=evidence_id, user=request.user)
     except VideoEvidence.DoesNotExist:
@@ -1022,7 +1019,6 @@ def upload_video_file(request, evidence_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    # Check if video already exists
     if evidence.video_file:
         return Response(
             {'error': 'Video file already uploaded for this evidence'},
@@ -1034,26 +1030,17 @@ def upload_video_file(request, evidence_id):
         return Response(file_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        # Save the video file
         evidence.video_file = file_serializer.validated_data['video_file']
         evidence.file_size = evidence.video_file.size
-        
-        # Try to extract duration from filename or metadata if available
-        # This is a placeholder - you might want to use a video processing library
-        # like moviepy or opencv to get actual duration
-        if not evidence.duration_seconds:
-            evidence.duration_seconds = 0  # Default, should be set by client
-        
         evidence.save()
         
-        full_serializer = VideoEvidenceSerializer(evidence)
+        full_serializer = VideoEvidenceSerializer(evidence, context={'request': request})
         return Response({
             'message': 'Video file uploaded successfully',
             'evidence': full_serializer.data
         })
         
     except Exception as e:
-        # Clean up if upload fails
         if evidence.video_file:
             try:
                 evidence.video_file.delete(save=False)
@@ -1067,12 +1054,21 @@ def upload_video_file(request, evidence_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_video_evidence(request):
-    if request.user.user_type == 'controller' :
+    
+    if request.user.user_type == 'controller':
         evidence = VideoEvidence.objects.all().order_by('-recorded_at')
-    else :
+    else:
         evidence = VideoEvidence.objects.filter(user=request.user).order_by('-recorded_at')
     
-    # Optional filters
+    # Filtering options
+    status_filter = request.query_params.get('status')
+    if status_filter:
+        evidence = evidence.filter(status=status_filter)
+    
+    type_filter = request.query_params.get('type')
+    if type_filter:
+        evidence = evidence.filter(type=type_filter)
+    
     is_anonymous = request.query_params.get('is_anonymous')
     if is_anonymous is not None:
         evidence = evidence.filter(is_anonymous=is_anonymous.lower() == 'true')
@@ -1085,21 +1081,100 @@ def list_video_evidence(request):
     if date_to:
         evidence = evidence.filter(recorded_at__date__lte=date_to)
     
-    serializer = VideoEvidenceSerializer(evidence, many=True)
+    serializer = VideoEvidenceSerializer(evidence, many=True, context={'request': request})
     return Response(serializer.data)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_video_evidence(request, evidence_id):
-
+    
     try:
         evidence = VideoEvidence.objects.get(id=evidence_id)
-        serializer = VideoEvidenceSerializer(evidence)
+        # if not evidence.user_can_access(request.user):
+        #     return Response(
+        #         {'error': 'Access denied'},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+        serializer = VideoEvidenceSerializer(evidence, context={'request': request})
         return Response(serializer.data)
     except VideoEvidence.DoesNotExist:
         return Response(
             {'error': 'Video evidence not found'},
             status=status.HTTP_404_NOT_FOUND
+        )
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_video_evidence(request, evidence_id):
+    
+    try:
+        evidence = VideoEvidence.objects.get(id=evidence_id)
+        # if not evidence.user_can_modify(request.user):
+        #     return Response(
+        #         {'error': 'You can only edit your own evidence'},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+    except VideoEvidence.DoesNotExist:
+        return Response(
+            {'error': 'Video evidence not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = VideoEvidenceUpdateSerializer(
+        evidence, 
+        data=request.data, 
+        partial=request.method == 'PATCH'
+    )
+    
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        serializer.save()
+        full_serializer = VideoEvidenceSerializer(evidence, context={'request': request})
+        return Response({
+            'message': 'Video evidence updated successfully',
+            'evidence': full_serializer.data
+        })
+    except Exception as e:
+        return Response(
+            {'error': f'Failed to update evidence: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_evidence_status(request, evidence_id):
+    
+    if request.user.user_type != 'controller':
+        return Response(
+            {'error': 'Only controllers can update evidence status'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    try:
+        evidence = VideoEvidence.objects.get(id=evidence_id)
+    except VideoEvidence.DoesNotExist:
+        return Response(
+            {'error': 'Video evidence not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = VideoEvidenceStatusSerializer(evidence, data=request.data, partial=True)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        serializer.save()
+        full_serializer = VideoEvidenceSerializer(evidence, context={'request': request})
+        return Response({
+            'message': 'Evidence status updated successfully',
+            'evidence': full_serializer.data
+        })
+    except Exception as e:
+        return Response(
+            {'error': f'Failed to update status: {str(e)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 @api_view(['DELETE'])
@@ -1108,8 +1183,12 @@ def delete_video_evidence(request, evidence_id):
 
     try:
         evidence = VideoEvidence.objects.get(id=evidence_id)
+        if not evidence.user_can_modify(request.user):
+            return Response(
+                {'error': 'You can only delete your own evidence'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         
-        # Delete the video file from storage
         if evidence.video_file:
             evidence.video_file.delete(save=False)
         
@@ -1128,16 +1207,28 @@ def delete_video_evidence(request, evidence_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def video_evidence_statistics(request):
-    if request.user.user_type == 'controller' :
+
+    if request.user.user_type == 'controller':
         user_evidence = VideoEvidence.objects.all()
-    else :
+    else:
         user_evidence = VideoEvidence.objects.filter(user=request.user)
-    
     
     total_videos = user_evidence.count()
     total_duration = sum(evidence.duration_seconds for evidence in user_evidence)
     total_file_size = sum(evidence.file_size for evidence in user_evidence)
     anonymous_count = user_evidence.filter(is_anonymous=True).count()
+    
+    # Status statistics
+    status_stats = {
+        status: user_evidence.filter(status=status).count()
+        for status, _ in VideoEvidence.STATUS_CHOICES
+    }
+    
+    # Type statistics
+    type_stats = {
+        evidence_type: user_evidence.filter(type=evidence_type).count()
+        for evidence_type, _ in VideoEvidence.EVIDENCE_TYPE
+    }
     
     # Recent activity (last 7 days)
     week_ago = timezone.now() - timezone.timedelta(days=7)
@@ -1151,5 +1242,7 @@ def video_evidence_statistics(request):
         'total_file_size_display': f"{total_file_size / (1024 * 1024 * 1024):.2f} GB",
         'anonymous_count': anonymous_count,
         'recent_count': recent_count,
-        'average_duration_seconds': total_duration / total_videos if total_videos > 0 else 0
+        'average_duration_seconds': total_duration / total_videos if total_videos > 0 else 0,
+        'status_statistics': status_stats,
+        'type_statistics': type_stats,
     })
