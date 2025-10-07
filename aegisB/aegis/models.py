@@ -414,9 +414,9 @@ class VideoEvidence(models.Model):
         
         if self.video_file and (self.duration_seconds == 0 or not self.duration_seconds):
             try:
-                video_path = self.video_file.path
-                if os.path.exists(video_path):
-                    clip = VideoFileClip(video_path)
+                
+                if hasattr(self.video_file, 'path') and os.path.exists(self.video_file.path):
+                    clip = VideoFileClip(self.video_file.path)
                     self.duration_seconds = int(clip.duration)
                     clip.close()
             except Exception as e:

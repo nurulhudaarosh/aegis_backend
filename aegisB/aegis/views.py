@@ -1183,11 +1183,6 @@ def delete_video_evidence(request, evidence_id):
 
     try:
         evidence = VideoEvidence.objects.get(id=evidence_id)
-        if not evidence.user_can_modify(request.user):
-            return Response(
-                {'error': 'You can only delete your own evidence'},
-                status=status.HTTP_403_FORBIDDEN
-            )
         
         if evidence.video_file:
             evidence.video_file.delete(save=False)
