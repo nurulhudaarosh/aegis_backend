@@ -57,7 +57,7 @@ urlpatterns = [
 
     path('safety/settings/', views.safety_settings, name='safety-settings'),
     path('safety/check-in/manual/', views.manual_check_in, name='manual-check-in'),
-    path('safety/alert/test/', views.test_emergency_alert, name='test-emergency-alert'),
+    path('safety/alert/test/', views.test_emergency_alert_demo, name='test-emergency-alert-demo'),
     path('safety/statistics/', views.safety_statistics, name='safety-statistics'),
     path('safety/history/check-ins/', views.check_in_history, name='check-in-history'),
     path('safety/history/alerts/', views.alert_history, name='alert-history'),
@@ -72,6 +72,28 @@ urlpatterns = [
     path('evidence/<int:evidence_id>/status/', views.update_evidence_status, name='update-evidence-status'),
     path('evidence/<int:evidence_id>/delete/', views.delete_video_evidence, name='delete-video-evidence'),
     path('evidence/statistics/', views.video_evidence_statistics, name='video-evidence-statistics'),
+
+
+    # emergecy alert
+
+
+    path('emergency/activate/', views.activate_emergency, name='activate-emergency'),
+    path('emergency/deactivate/', views.deactivate_emergency, name='deactivate-emergency'),
+    path('emergency/update-location/', views.update_location, name='update-location'),
+    path('emergency/upload-media/', views.upload_media, name='upload-media'),
+    path('emergency/<str:alert_id>/', views.get_emergency_details, name='emergency-details'),
+    path('emergency/updates/<str:alert_id>/', views.get_emergency_updates, name='emergency-updates'),
+    path('emergency/active/', views.get_active_emergencies, name='active-emergencies'),
+    path('emergency/history/', views.get_emergency_history, name='emergency-history'),
+    path('emergency/statistics/', views.emergency_statistics, name='emergency-statistics'),
+    
+    # Responder Management
+    path('responder/assignments/', views.get_responder_assignments, name='responder-assignments'),
+    path('responder/update-status/', views.update_response_status, name='update-response-status'),
+    
+    # Notifications
+    path('notifications/', views.get_user_notifications, name='user-notifications'),
+    path('notifications/<int:notification_id>/read/', views.mark_notification_read, name='mark-notification-read'),
 
 
 ]

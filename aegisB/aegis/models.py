@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator, MaxValueValidator
 from datetime import timedelta
 from moviepy import VideoFileClip
 
@@ -12,7 +13,6 @@ User = get_user_model()
 
 
 def incident_media_upload_path(instance, filename):
-    """Generate upload path for incident media files"""
     date_str = timezone.now().strftime('%Y/%m/%d')
     return f'incident_media/{date_str}/{instance.incident.id}/{filename}'
 
@@ -336,27 +336,27 @@ class SafetyCheckIn(models.Model):
         self.status = 'missed'
         self.save()
 
-class EmergencyAlert(models.Model):
-    ALERT_TYPES = [
-        ('test', 'Test Alert'),
-        ('manual', 'Manual Alert'),
-        ('auto', 'Automatic Alert'),
-    ]
+# class EmergencyAlert(models.Model):
+#     ALERT_TYPES = [
+#         ('test', 'Test Alert'),
+#         ('manual', 'Manual Alert'),
+#         ('auto', 'Automatic Alert'),
+#     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='emergency_alerts')
-    alert_type = models.CharField(max_length=20, choices=ALERT_TYPES)
-    message = models.TextField()
-    location_lat = models.FloatField(null=True, blank=True)
-    location_lng = models.FloatField(null=True, blank=True)
-    sent_to_contacts = models.BooleanField(default=False)
-    sent_to_authorities = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+#     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='emergency_alerts')
+#     alert_type = models.CharField(max_length=20, choices=ALERT_TYPES)
+#     message = models.TextField()
+#     location_lat = models.FloatField(null=True, blank=True)
+#     location_lng = models.FloatField(null=True, blank=True)
+#     sent_to_contacts = models.BooleanField(default=False)
+#     sent_to_authorities = models.BooleanField(default=False)
+#     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        ordering = ['-created_at']
+#     class Meta:
+#         ordering = ['-created_at']
 
-    def __str__(self):
-        return f"Alert - {self.user.email} - {self.alert_type}"
+#     def __str__(self):
+#         return f"Alert - {self.user.email} - {self.alert_type}"
     
 
 # silent capture or evedence
@@ -454,3 +454,201 @@ class VideoEvidence(models.Model):
 
     def user_can_modify(self, user):
         return self.user == user
+    
+
+# emergecy alert
+
+
+def generate_alert_id():
+    return f"EMG-{uuid.uuid4().hex[:8].upper()}"
+
+class EmergencyAlert(models.Model):
+    ALERT_STATUS = [
+        ('active', 'Active'),
+        ('cancelled', 'Cancelled'),
+        ('resolved', 'Resolved'),
+        ('false_alarm', 'False Alarm'),
+    ]
+    
+    ACTIVATION_METHODS = [
+        ('button', 'Button Press'),
+        ('shake', 'Shake Detection'),
+        ('power_press', 'Power Button Press'),
+        ('voice', 'Voice Command'),
+        ('manual', 'Manual Activation'),
+    ]
+    
+    # Core alert information
+    alert_id = models.CharField(max_length=20, unique=True, default=generate_alert_id)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='emergency_alerts')
+    status = models.CharField(max_length=20, choices=ALERT_STATUS, default='active')
+    activation_method = models.CharField(max_length=20, choices=ACTIVATION_METHODS, default='button')
+    is_silent = models.BooleanField(default=False)
+    
+    # Location data
+    initial_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    initial_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    initial_address = models.TextField(blank=True)
+    
+    # Timestamps
+    activated_at = models.DateTimeField(default=timezone.now)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    last_updated = models.DateTimeField(auto_now=True)
+    
+    # Emergency details
+    severity_level = models.CharField(max_length=20, default='medium', choices=[
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+        ('critical', 'Critical')
+    ])
+    emergency_type = models.CharField(max_length=50, blank=True, default='general')
+    description = models.TextField(blank=True)
+    
+    # Security features
+    fake_screen_active = models.BooleanField(default=True)
+    deactivation_attempts = models.IntegerField(default=0)
+    
+    class Meta:
+        ordering = ['-activated_at']
+        indexes = [
+            models.Index(fields=['status', 'activated_at']),
+            models.Index(fields=['user', 'activated_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.alert_id} - {self.user.email} - {self.status}"
+
+class LocationUpdate(models.Model):
+    alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, related_name='location_updates')
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    accuracy = models.FloatField(null=True, blank=True, help_text="GPS accuracy in meters")
+    speed = models.FloatField(null=True, blank=True, help_text="Speed in m/s")
+    altitude = models.FloatField(null=True, blank=True)
+    heading = models.FloatField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(360)])
+    timestamp = models.DateTimeField(default=timezone.now)
+    
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['alert', 'timestamp']),
+        ]
+    
+    def __str__(self):
+        return f"Location for {self.alert.alert_id} at {self.timestamp}"
+
+def media_upload_path(instance, filename):
+    """
+    Example: emergency/EMG-ABC12345/filename.jpg
+    """
+    import os
+    ext = filename.split('.')[-1]
+    secure_name = f"{instance.alert.alert_id}_{int(timezone.now().timestamp())}.{ext}"
+    return os.path.join('emergency', instance.alert.alert_id, secure_name)
+
+class MediaCapture(models.Model):
+    MEDIA_TYPES = [
+        ('audio', 'Audio Recording'),
+        ('photo', 'Photo'),
+        ('video', 'Video'),
+    ]
+    
+    alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, related_name='media_captures')
+    media_type = models.CharField(max_length=10, choices=MEDIA_TYPES)
+    file = models.FileField(upload_to=media_upload_path, blank=False, null=False)
+    file_size = models.BigIntegerField(default=0, help_text="Size in bytes")
+    duration = models.IntegerField(null=True, blank=True, help_text="For audio/video in seconds")
+    captured_at = models.DateTimeField(default=timezone.now)
+    
+    # Security & metadata
+    is_encrypted = models.BooleanField(default=True)
+    encryption_key = models.TextField(blank=True)
+    mime_type = models.CharField(max_length=100, blank=True)
+    resolution = models.CharField(max_length=20, blank=True, help_text="e.g., 1920x1080")
+    
+    class Meta:
+        ordering = ['-captured_at']
+    
+    def __str__(self):
+        return f"{self.media_type} for {self.alert.alert_id}"
+
+class EmergencyResponse(models.Model):
+    RESPONSE_STATUS = [
+        ('notified', 'Notified'),
+        ('dispatched', 'Dispatched'),
+        ('en_route', 'En Route'),
+        ('on_scene', 'On Scene'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+    ]
+    
+    alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, related_name='responses')
+    responder = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'user_type': 'agent'})
+    status = models.CharField(max_length=20, choices=RESPONSE_STATUS, default='notified')
+    eta_minutes = models.IntegerField(null=True, blank=True, help_text="Estimated arrival time in minutes")
+    
+    # Timestamps
+    notified_at = models.DateTimeField(default=timezone.now)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    arrived_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Response details
+    notes = models.TextField(blank=True)
+    rating = models.FloatField(null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(5)])
+    feedback = models.TextField(blank=True)
+    
+    class Meta:
+        unique_together = ['alert', 'responder']
+        ordering = ['notified_at']
+    
+    def __str__(self):
+        return f"{self.responder.email} - {self.alert.alert_id} - {self.status}"
+
+class DeactivationAttempt(models.Model):
+    alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, related_name='deactivatation_attempt_logs')
+    attempted_pin = models.CharField(max_length=6)
+    is_successful = models.BooleanField(default=False)
+    attempted_at = models.DateTimeField(default=timezone.now)
+    device_info = models.JSONField(default=dict, blank=True)
+    location_at_attempt = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        ordering = ['-attempted_at']
+    
+    def __str__(self):
+        status = "Successful" if self.is_successful else "Failed"
+        return f"{status} deactivation attempt for {self.alert.alert_id}"
+
+class EmergencyNotification(models.Model):
+    NOTIFICATION_TYPES = [
+        ('alert_activated', 'Alert Activated'),
+        ('responder_assigned', 'Responder Assigned'),
+        ('status_update', 'Status Update'),
+        ('location_update', 'Location Update'),
+        ('media_uploaded', 'Media Uploaded'),
+        ('alert_resolved', 'Alert Resolved'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, null=True, blank=True)
+    notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+    
+    # Additional data
+    data = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'is_read', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.notification_type} - {self.user.email}"

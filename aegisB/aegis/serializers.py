@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from .models import (
-    EmergencyAlert, IncidentUpdate, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
+    EmergencyAlert, EmergencyNotification, EmergencyResponse, IncidentUpdate, LocationUpdate, MediaCapture, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
     LearningResource, SafetyCheckIn, SafetyCheckSettings, UserProgress, UserQuizAttempt,EmergencyContact,
     IncidentReport, IncidentMedia, VideoEvidence,
 
@@ -395,3 +395,130 @@ class VideoUploadSerializer(serializers.Serializer):
             raise serializers.ValidationError("Uploaded file must be a video")
 
         return value
+    
+
+# emergency alert
+
+
+class UserBasicSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'full_name', 'email', 'phone', 'user_type', 'profile_picture']
+
+class ResponderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            'id', 'full_name', 'email', 'phone', 'responder_type', 
+            'status', 'badge_number', 'specialization', 'rating',
+            'total_cases', 'latitude', 'longitude', 'profile_picture'
+        ]
+
+# Use your existing EmergencyContact model
+class EmergencyContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmergencyContact
+        fields = [
+            'id', 'name', 'phone', 'email', 'relationship', 
+            'is_emergency_contact', 'is_primary', 'created_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+class EmergencyAlertSerializer(serializers.ModelSerializer):
+    user_info = UserBasicSerializer(source='user', read_only=True)
+    duration_seconds = serializers.SerializerMethodField()
+    responders_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = EmergencyAlert
+        fields = [
+            'alert_id', 'user', 'user_info', 'status', 'activation_method', 'is_silent',
+            'initial_latitude', 'initial_longitude', 'initial_address',
+            'activated_at', 'cancelled_at', 'resolved_at', 'last_updated',
+            'severity_level', 'emergency_type', 'description',
+            'fake_screen_active', 'deactivation_attempts',
+            'duration_seconds', 'responders_count'
+        ]
+        read_only_fields = ['alert_id', 'activated_at', 'last_updated']
+    
+    def get_duration_seconds(self, obj):
+        if obj.status == 'active':
+            return (timezone.now() - obj.activated_at).total_seconds()
+        return None
+    
+    def get_responders_count(self, obj):
+        return obj.responses.count()
+
+class LocationUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LocationUpdate
+        fields = '__all__'
+        read_only_fields = ['timestamp']
+
+class MediaCaptureSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MediaCapture
+        fields = '__all__'
+        read_only_fields = ['captured_at']
+
+class EmergencyResponseSerializer(serializers.ModelSerializer):
+    responder_info = ResponderSerializer(source='responder', read_only=True)
+    alert_info = EmergencyAlertSerializer(source='alert', read_only=True)
+    
+    class Meta:
+        model = EmergencyResponse
+        fields = '__all__'
+        read_only_fields = ['notified_at']
+
+class EmergencyNotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmergencyNotification
+        fields = '__all__'
+        read_only_fields = ['created_at']
+
+# Request/Input Serializers
+class EmergencyActivationSerializer(serializers.Serializer):
+    activation_method = serializers.CharField(max_length=20, default='button')
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False)
+    address = serializers.CharField(required=False, allow_blank=True)
+    is_silent = serializers.BooleanField(default=False)
+    emergency_type = serializers.CharField(max_length=50, required=False, default='general')
+    description = serializers.CharField(required=False, allow_blank=True)
+
+class DeactivationSerializer(serializers.Serializer):
+    pin = serializers.CharField(max_length=6, required=True)
+    alert_id = serializers.CharField(max_length=20, required=True)
+
+class LocationUpdateRequestSerializer(serializers.Serializer):
+    alert_id = serializers.CharField(max_length=20, required=True)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=True)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=True)
+    accuracy = serializers.FloatField(required=False)
+    speed = serializers.FloatField(required=False)
+    altitude = serializers.FloatField(required=False)
+    heading = serializers.FloatField(required=False)
+
+class MediaUploadSerializer(serializers.Serializer):
+    alert_id = serializers.CharField(max_length=20, required=True)
+    media_type = serializers.ChoiceField(choices=MediaCapture.MEDIA_TYPES)
+    file = serializers.FileField(required=True)
+    duration = serializers.IntegerField(required=False, allow_null=True)
+
+class ResponderAssignmentSerializer(serializers.Serializer):
+    alert_id = serializers.CharField(max_length=20, required=True)
+    responder_id = serializers.IntegerField(required=True)
+
+class EmergencyAlertDetailSerializer(EmergencyAlertSerializer):
+    location_updates = LocationUpdateSerializer(many=True, read_only=True)
+    media_captures = MediaCaptureSerializer(many=True, read_only=True)
+    responses = EmergencyResponseSerializer(many=True, read_only=True)
+    emergency_contacts = serializers.SerializerMethodField()
+    
+    def get_emergency_contacts(self, obj):
+        # Use your existing EmergencyContact model
+        contacts = EmergencyContact.objects.filter(
+            user=obj.user, 
+            is_emergency_contact=True
+        ).order_by('-is_primary', 'name')
+        return EmergencyContactSerializer(contacts, many=True).data

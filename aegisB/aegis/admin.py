@@ -116,13 +116,13 @@ class SafetyCheckInAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'is_overdue')
     date_hierarchy = 'scheduled_at'
 
-@admin.register(models.EmergencyAlert)
-class EmergencyAlertAdmin(admin.ModelAdmin):
-    list_display = ('user', 'alert_type', 'sent_to_contacts', 'sent_to_authorities', 'created_at')
-    list_filter = ('alert_type', 'sent_to_contacts', 'sent_to_authorities', 'created_at')
-    search_fields = ('user__email', 'user__name', 'message')
-    readonly_fields = ('created_at',)
-    date_hierarchy = 'created_at'
+# @admin.register(models.EmergencyAlert)
+# class EmergencyAlertAdmin(admin.ModelAdmin):
+#     list_display = ('user', 'alert_type', 'sent_to_contacts', 'sent_to_authorities', 'created_at')
+#     list_filter = ('alert_type', 'sent_to_contacts', 'sent_to_authorities', 'created_at')
+#     search_fields = ('user__email', 'user__name', 'message')
+#     readonly_fields = ('created_at',)
+#     date_hierarchy = 'created_at'
 
 
 # silent capture
@@ -154,3 +154,13 @@ class VideoEvidenceAdmin(admin.ModelAdmin):
     def file_size_display(self, obj):
         return obj.get_file_size_display()
     file_size_display.short_description = 'File Size'
+
+
+# emergency alert
+
+admin.site.register(models.LocationUpdate)
+admin.site.register(models.EmergencyAlert)
+admin.site.register(models.MediaCapture)
+admin.site.register(models.EmergencyResponse)
+admin.site.register(models.DeactivationAttempt)
+admin.site.register(models.EmergencyNotification)

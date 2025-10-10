@@ -1,6 +1,7 @@
+# serializers.py
 from rest_framework import serializers
-from django.contrib.auth import authenticate
-from .models import CustomUser
+from django.contrib.auth import authenticate, password_validation
+from .models import CustomUser, EmergencyAssignment
 from datetime import date
 
 class UserSerializer(serializers.ModelSerializer):
@@ -9,7 +10,10 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ('id', 'name', 'email', 'password', 'user_type', 'agent_id', 
-                  'gender', 'phone', 'id_type', 'id_number', 'dob','blood_group','address','emergency_medical_note')
+                  'responder_type', 'status', 'badge_number', 'specialization',
+                  'rating', 'total_cases', 'location', 'latitude', 'longitude',
+                  'gender', 'phone', 'id_type', 'id_number', 'dob', 'blood_group',
+                  'address', 'emergency_medical_note', 'last_active')
     
     def validate_email(self, value):
         if CustomUser.objects.filter(email=value).exists():
@@ -22,12 +26,15 @@ class UserSerializer(serializers.ModelSerializer):
         return value
     
     def validate(self, data):
-        # Validate agent_id based on user_type
         user_type = data.get('user_type', 'user')
         agent_id = data.get('agent_id')
+        responder_type = data.get('responder_type')
         
-        if user_type == 'agent' and not agent_id:
-            raise serializers.ValidationError({"agent_id": "Agent ID is required for agent users."})
+        if user_type == 'agent':
+            if not agent_id:
+                raise serializers.ValidationError({"agent_id": "Agent ID is required for agent users."})
+            if not responder_type:
+                raise serializers.ValidationError({"responder_type": "Responder type is required for agent users."})
         
         if user_type == 'user' and agent_id:
             raise serializers.ValidationError({"agent_id": "Agent ID should not be provided for regular users."})
@@ -41,6 +48,24 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
+class ResponderSerializer(serializers.ModelSerializer):
+
+    assigned_emergency = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = ('id', 'name', 'email', 'agent_id', 'responder_type', 'status',
+                  'badge_number', 'phone', 'email', 'location', 'specialization',
+                  'rating', 'total_cases', 'last_active', 'assigned_emergency',
+                  'latitude', 'longitude', 'profile_picture')
+    
+    def get_assigned_emergency(self, obj):
+        # Get current active emergency assignment
+        assignment = EmergencyAssignment.objects.filter(
+            agent=obj, 
+            status__in=['assigned', 'en_route', 'on_scene']
+        ).first()
+        return assignment.emergency_id if assignment else None
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -73,17 +98,45 @@ class LoginSerializer(serializers.Serializer):
         data['user'] = user
         return data
 
-
 class UserProfileSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source='full_name', required=False)
     class Meta:
         model = CustomUser
-        fields = ('id', 'name', 'email', 'user_type', 'agent_id', 
+        fields = ('id', 'name', 'email', 'user_type', 'agent_id', 'responder_type',
+                  'status', 'badge_number', 'specialization', 'rating', 'total_cases',
                   'gender', 'phone', 'id_type', 'id_number', 'dob', 'blood_group',
-                  'address', 'emergency_medical_note', 'profile_picture')
-        read_only_fields = ('email', 'user_type', 'agent_id')
-
+                  'address', 'emergency_medical_note', 'profile_picture', 'location',
+                  'latitude', 'longitude', 'last_active')
+        read_only_fields = ('email', 'user_type', 'agent_id', 'rating', 'total_cases')
 
 class ProfilePictureSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ('profile_picture',)
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(
+        required=True, 
+        min_length=6, 
+        write_only=True
+    )
+    confirm_password = serializers.CharField(required=True, write_only=True)
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Your current password is incorrect.")
+        return value
+
+    def validate(self, data):
+        if data['new_password'] != data['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "The new passwords do not match."})
+        
+        if data['old_password'] == data['new_password']:
+            raise serializers.ValidationError(
+                {"new_password": "New password cannot be the same as your current password."}
+            )
+        
+        return data
