@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 from datetime import timedelta
 import json
 import logging
+import math
 
 
 
@@ -21,7 +22,9 @@ from .models import (
     DeactivationAttempt,
     EmergencyAlert,
     EmergencyContact,
+    EmergencyIncidentReport,
     EmergencyNotification,
+    EmergencyReportEvidence,
     EmergencyResponse,
     ExternalLink,
     LocationUpdate,
@@ -46,13 +49,17 @@ from .serializers import (
     EmergencyAlertSerializer,
     EmergencyContactSerializer, 
     EmergencyContactCreateSerializer,
+    EmergencyIncidentReportListSerializer,
+    EmergencyIncidentReportSerializer,
     EmergencyNotificationSerializer,
+    EmergencyReportEvidenceSerializer,
     EmergencyResponseSerializer,
     IncidentUpdateSerializer,
     LocationUpdateRequestSerializer,
     LocationUpdateSerializer,
     ManualCheckInSerializer,
     MediaCaptureSerializer,
+    ResponderAssignmentSerializer,
     SafetyCheckInSerializer,
     SafetyCheckSettingsSerializer,
     SafetyStatisticsSerializer,
@@ -1272,19 +1279,7 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 def activate_emergency(request):
-    """
-    Activate emergency panic mode
-    POST /api/aegis/emergency/activate/
-    {
-        "activation_method": "button",
-        "latitude": 23.8103,
-        "longitude": 90.4125,
-        "address": "Dhaka, Bangladesh",
-        "is_silent": false,
-        "emergency_type": "medical",
-        "description": "Need immediate medical assistance"
-    }
-    """
+
     serializer = EmergencyActivationSerializer(data=request.data)
     if serializer.is_valid():
         try:
@@ -1619,7 +1614,7 @@ def get_emergency_details(request, alert_id):
     GET /api/aegis/emergency/EMG-ABC12345/
     """
     try:
-        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id, user=request.user)
+        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id)
         serializer = EmergencyAlertDetailSerializer(alert)
         return Response({
             'success': True,
@@ -1635,11 +1630,8 @@ def get_emergency_details(request, alert_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_active_emergencies(request):
-    """
-    Get user's active emergencies
-    GET /api/aegis/emergency/active/
-    """
-    alerts = EmergencyAlert.objects.filter(user=request.user, status='active').order_by('-activated_at')
+
+    alerts = EmergencyAlert.objects.filter(status='active').order_by('-activated_at')
     serializer = EmergencyAlertSerializer(alerts, many=True)
     
     return Response({
@@ -1726,8 +1718,8 @@ def update_response_status(request):
         
         # Validate status transition
         valid_transitions = {
-            'notified': ['dispatched', 'cancelled'],
-            'dispatched': ['en_route', 'cancelled'],
+            'notified': ['accepted', 'cancelled'],  
+            'accepted': ['en_route', 'cancelled'],
             'en_route': ['on_scene', 'cancelled'],
             'on_scene': ['completed', 'cancelled'],
             'completed': [],
@@ -1747,8 +1739,8 @@ def update_response_status(request):
         
         # Update timestamps based on status
         now = timezone.now()
-        if new_status == 'dispatched' and not response.dispatched_at:
-            response.dispatched_at = now
+        if new_status == 'accepted' and not response.accepted_at:
+            response.accepted_at = now
         elif new_status == 'en_route' and not response.dispatched_at:
             response.dispatched_at = now
         elif new_status == 'on_scene' and not response.arrived_at:
@@ -1757,6 +1749,7 @@ def update_response_status(request):
             response.completed_at = now
         elif new_status == 'cancelled':
             response.completed_at = now
+
         
         response.save()
         
@@ -1829,9 +1822,6 @@ def assign_nearby_responders(alert):
             )
             assigned.append(responder)
             
-            # Update responder status
-            responder.status = 'busy'
-            responder.save()
             
             # Notify responder
             EmergencyNotification.objects.create(
@@ -1858,9 +1848,7 @@ def assign_nearby_responders(alert):
 
 
 def notify_emergency_contacts(alert):
-    """
-    Notify user's emergency contacts using the existing model
-    """
+    
     contacts = EmergencyContact.objects.filter(
         user=alert.user, 
         is_emergency_contact=True
@@ -1882,9 +1870,6 @@ def notify_emergency_contacts(alert):
 
 
 def send_emergency_notification(contact, alert):
-    """
-    Send emergency notification to contact
-    """
     # SMS message template
     message = f"""
 🚨 EMERGENCY ALERT 🚨
@@ -1910,9 +1895,7 @@ Aegis Emergency Response System
 
 
 def notify_responders_cancellation(alert):
-    """
-    Notify responders about emergency cancellation
-    """
+
     for response in alert.responses.all():
         response.status = 'cancelled'
         response.completed_at = timezone.now()
@@ -1937,9 +1920,7 @@ def notify_responders_cancellation(alert):
 
 
 def notify_responders_location_update(alert, location_update):
-    """
-    Notify responders about location update
-    """
+
     for response in alert.responses.all():
         EmergencyNotification.objects.create(
             user=response.responder,
@@ -1958,9 +1939,7 @@ def notify_responders_location_update(alert, location_update):
 
 
 def notify_responders_media_upload(alert, media_capture):
-    """
-    Notify responders about new media upload
-    """
+
     for response in alert.responses.all():
         EmergencyNotification.objects.create(
             user=response.responder,
@@ -2140,7 +2119,7 @@ def get_emergency_updates(request, alert_id):
     GET /api/aegis/emergency/updates/EMG-ABC12345/
     """
     try:
-        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id, user=request.user)
+        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id)
         
         # Get latest data
         location_updates = LocationUpdate.objects.filter(alert=alert).order_by('-timestamp')[:5]
@@ -2177,3 +2156,732 @@ def get_emergency_updates(request, alert_id):
             'success': False,
             'error': 'Emergency alert not found'
         }, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_emergecy_list(request):
+
+    alerts = EmergencyAlert.objects.all().order_by('-activated_at')
+    serializer = EmergencyAlertSerializer(alerts, many=True)
+    
+    return Response({
+        'success': True,
+        'count': alerts.count(),
+        'data': serializer.data
+    })
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_available_responders(request, alert_id):
+    """
+    Get available responders with distances from emergency location
+    GET /api/aegis/emergency/EMG-ABC12345/available-responders/
+    """
+    try:
+        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id)
+        
+        if not alert.initial_latitude or not alert.initial_longitude:
+            return Response({
+                'success': False,
+                'error': 'Emergency location not available'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get available responders (not currently assigned to this emergency)
+        available_responders = User.objects.filter(
+            user_type='agent',
+            status='available',
+            latitude__isnull=False,
+            longitude__isnull=False
+        ).exclude(
+            id__in=EmergencyResponse.objects.filter(alert=alert).values('responder_id')
+        )
+        
+        responders_with_distance = []
+        for responder in available_responders:
+            distance = calculate_distance(
+                float(alert.initial_latitude),
+                float(alert.initial_longitude),
+                float(responder.latitude),
+                float(responder.longitude)
+            )
+            
+            # Calculate ETA based on distance and responder type
+            eta_minutes = calculate_eta_based_on_distance(distance, responder.responder_type)
+            
+            responders_with_distance.append({
+                'id': responder.id,
+                'name': responder.full_name,
+                'email': responder.email,
+                'phone': responder.phone,
+                'responder_type': responder.responder_type,
+                'badge_number': responder.badge_number,
+                'specialization': responder.specialization,
+                'rating': responder.rating,
+                'total_cases': responder.total_cases,
+                'latitude': float(responder.latitude),
+                'longitude': float(responder.longitude),
+                'distance_km': round(distance, 2),
+                'eta_minutes': eta_minutes,
+                'profile_picture': responder.profile_picture.url if responder.profile_picture else None
+            })
+        
+        # Sort by distance
+        responders_with_distance.sort(key=lambda x: x['distance_km'])
+        
+        return Response({
+            'success': True,
+            'count': len(responders_with_distance),
+            'emergency_location': {
+                'latitude': float(alert.initial_latitude),
+                'longitude': float(alert.initial_longitude),
+                'address': alert.initial_address
+            },
+            'responders': responders_with_distance
+        })
+        
+    except EmergencyAlert.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Emergency alert not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def assign_responder(request):
+    
+    serializer = ResponderAssignmentSerializer(data=request.data)
+    if serializer.is_valid():
+        try:
+            alert = get_object_or_404(EmergencyAlert, alert_id=serializer.validated_data['alert_id'])
+            responder = get_object_or_404(User, id=serializer.validated_data['responder_id'], user_type='agent')
+            
+            # Check if responder is already assigned
+            existing_response = EmergencyResponse.objects.filter(alert=alert, responder=responder).first()
+            if existing_response:
+                return Response({
+                    'success': False,
+                    'error': 'Responder already assigned to this emergency'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Calculate ETA based on current location
+            eta_minutes = calculate_eta_based_on_distance(
+                calculate_distance(
+                    float(alert.initial_latitude),
+                    float(alert.initial_longitude),
+                    float(responder.latitude),
+                    float(responder.longitude)
+                ),
+                responder.responder_type
+            )
+            
+            # Create response assignment
+            response = EmergencyResponse.objects.create(
+                alert=alert,
+                responder=responder,
+                status='assigned',
+                eta_minutes=eta_minutes,
+                notes=serializer.validated_data.get('notes', '')
+            )
+            
+            # Update responder status
+            responder.status = 'busy'
+            responder.save()
+            
+            # Create notification for responder
+            EmergencyNotification.objects.create(
+                user=responder,
+                alert=alert,
+                notification_type='responder_assigned',
+                title='New Emergency Assignment',
+                message=f'You have been assigned to emergency {alert.alert_id}. Estimated arrival: {eta_minutes} minutes',
+                data={
+                    'alert_id': alert.alert_id,
+                    'eta_minutes': eta_minutes,
+                    'emergency_type': alert.emergency_type,
+                    'location': alert.initial_address,
+                    'user_name': alert.user.full_name
+                }
+            )
+            
+            # Create notification for user
+            EmergencyNotification.objects.create(
+                user=alert.user,
+                alert=alert,
+                notification_type='responder_assigned',
+                title='Responder Assigned',
+                message=f'Responder {responder.full_name} has been assigned to your emergency. ETA: {eta_minutes} minutes',
+                data={
+                    'responder_name': responder.full_name,
+                    'eta_minutes': eta_minutes,
+                    'responder_type': responder.responder_type
+                }
+            )
+            
+            logger.info(f"Responder {responder.email} assigned to alert {alert.alert_id}")
+            
+            return Response({
+                'success': True,
+                'message': 'Responder assigned successfully',
+                'response_id': response.id,
+                'eta_minutes': eta_minutes
+            })
+            
+        except EmergencyAlert.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Emergency alert not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except User.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Responder not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+    
+    return Response({
+        'success': False,
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_emergency_map_data(request, alert_id):
+    """
+    Get map data for emergency including location, responder locations, etc.
+    GET /api/aegis/emergency/EMG-ABC12345/map-data/
+    """
+    try:
+        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id)
+        
+        map_data = {
+            'emergency_location': {
+                'latitude': float(alert.initial_latitude) if alert.initial_latitude else None,
+                'longitude': float(alert.initial_longitude) if alert.initial_longitude else None,
+                'address': alert.initial_address,
+                'alert_id': alert.alert_id,
+                'emergency_type': alert.emergency_type
+            },
+            'location_updates': [],
+            'assigned_responders': [],
+            'available_responders': []
+        }
+        
+        # Get recent location updates
+        location_updates = LocationUpdate.objects.filter(alert=alert).order_by('-timestamp')[:10]
+        for update in location_updates:
+            map_data['location_updates'].append({
+                'latitude': float(update.latitude),
+                'longitude': float(update.longitude),
+                'timestamp': update.timestamp.isoformat(),
+                'accuracy': update.accuracy
+            })
+        
+        # Get assigned responders with locations
+        assigned_responses = EmergencyResponse.objects.filter(
+            alert=alert
+        ).select_related('responder')
+        # print(assigned_responses)
+        for response in assigned_responses:
+            if response.responder.latitude and response.responder.longitude:
+                map_data['assigned_responders'].append({
+                    'id': response.responder.id,
+                    'name': response.responder.full_name,
+                    'type': response.responder.responder_type,
+                    'latitude': float(response.responder.latitude),
+                    'longitude': float(response.responder.longitude),
+                    'status': response.status,
+                    'eta_minutes': response.eta_minutes
+                })
+        
+        return Response({
+            'success': True,
+            'data': map_data
+        })
+        
+    except EmergencyAlert.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Emergency alert not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+
+
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate distance between two coordinates in kilometers using Haversine formula
+    """
+    R = 6371  # Earth radius in kilometers
+    
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    
+    a = (math.sin(dlat/2) * math.sin(dlat/2) +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon/2) * math.sin(dlon/2))
+    
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    distance = R * c
+    
+    return distance
+
+def calculate_eta_based_on_distance(distance_km, responder_type):
+    
+    # Base speed in km/h based on responder type
+    base_speeds = {
+        'police': 60,    # km/h
+        'medical': 50,   # km/h  
+        'ngo': 40,       # km/h
+        'volunteer': 30, # km/h
+    }
+    
+    speed = base_speeds.get(responder_type, 40)  # Default 40 km/h
+    
+    # Calculate time in hours, then convert to minutes
+    time_hours = distance_km / speed
+    eta_minutes = max(2, time_hours * 60)  # Minimum 2 minutes
+    
+    return round(eta_minutes)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_media(request):
+
+    try:
+        alert_id = request.GET.get('alert_id')
+        media_type = request.GET.get('media_type')
+        
+        media_queryset = MediaCapture.objects.all()
+        
+        if alert_id:
+            media_queryset = media_queryset.filter(alert__alert_id=alert_id)
+        
+        if media_type and media_type in ['audio', 'photo', 'video']:
+            media_queryset = media_queryset.filter(media_type=media_type)
+        
+        media_queryset = media_queryset.order_by('-captured_at')
+        
+        serializer = MediaCaptureSerializer(media_queryset, many=True)
+        
+        return Response({
+            'success': True,
+            'count': len(serializer.data),
+            'data': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching media: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to fetch media files'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_emergency_responses(request, alert_id):
+    """
+    Get all responders assigned to a specific emergency alert,
+    including their distance from the emergency location.
+    GET /api/aegis/emergency/<alert_id>/notified-responder/
+
+    """
+    try:
+        alert = get_object_or_404(EmergencyAlert, alert_id=alert_id)
+
+        if not alert.initial_latitude or not alert.initial_longitude:
+            return Response({
+                'success': False,
+                'error': 'Emergency location not available'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Optional filtering by status (?status=en_route)
+        # status_filter = request.query_params.get('status')
+
+        responses_qs = EmergencyResponse.objects.filter(alert=alert).select_related('responder', 'alert')
+        # if status_filter:
+        #     responses_qs = responses_qs.filter(status=status_filter)
+
+        if not responses_qs.exists():
+            return Response({
+                'success': True,
+                'message': 'No responders assigned to this emergency yet.',
+                'alert_id': alert.alert_id,
+                'responses': []
+            }, status=status.HTTP_200_OK)
+
+        response_list = []
+        for response in responses_qs:
+            responder = response.responder
+
+            # Calculate distance if both locations exist
+            distance_km = None
+            if responder.latitude and responder.longitude:
+                distance_km = calculate_distance(
+                    float(alert.initial_latitude),
+                    float(alert.initial_longitude),
+                    float(responder.latitude),
+                    float(responder.longitude)
+                )
+
+            response_list.append({
+                'response_id': response.id,
+                'responder_id': responder.id,
+                'responder_name': responder.full_name,
+                'email': responder.email,
+                'phone': responder.phone,
+                'responder_type': responder.responder_type,
+                'badge_number': responder.badge_number,
+                'specialization': responder.specialization,
+                'rating': responder.rating,
+                'total_cases': responder.total_cases,
+                'status': response.status,
+                'eta_minutes': response.eta_minutes,
+                'notes': response.notes,
+                'distance_km': round(distance_km, 2) if distance_km is not None else None,
+                'timestamps': {
+                    'notified_at': response.notified_at,
+                    'accepted_at': response.accepted_at,
+                    'dispatched_at': response.dispatched_at,
+                    'arrived_at': response.arrived_at,
+                    'completed_at': response.completed_at,
+                }
+            })
+
+        # Sort responders by distance (closest first)
+        response_list.sort(key=lambda x: (x['distance_km'] is None, x['distance_km']))
+
+        return Response({
+            'success': True,
+            'count': len(response_list),
+            'alert': {
+                'alert_id': alert.alert_id,
+                'emergency_type': alert.emergency_type,
+                'address': alert.initial_address,
+                'latitude': float(alert.initial_latitude),
+                'longitude': float(alert.initial_longitude),
+                'created_at': alert.activated_at
+            },
+            'responses': response_list
+        }, status=status.HTTP_200_OK)
+
+    except EmergencyAlert.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Emergency alert not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+
+
+@api_view(['POST','GET' ])
+@permission_classes([IsAuthenticated])
+def emergency_incident_reports(request):
+
+    try:
+        if request.method == 'GET':
+            # Get query parameters
+            status_filter = request.GET.get('status')
+            incident_type = request.GET.get('incident_type')
+            severity = request.GET.get('severity')
+            
+            # Base queryset
+            if request.user.user_type in ['supervisor', 'admin']:
+                reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').all()
+            else:
+                reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').filter(agent=request.user)
+            
+            # Apply filters
+            if status_filter:
+                reports = reports.filter(status=status_filter)
+            if incident_type:
+                reports = reports.filter(incident_type=incident_type)
+            if severity:
+                reports = reports.filter(severity=severity)
+            
+            reports = reports.order_by('-created_at')
+            
+            serializer = EmergencyIncidentReportListSerializer(reports, many=True)
+            
+            return Response({
+                'success': True,
+                'count': len(serializer.data),
+                'data': serializer.data
+            })
+        
+        elif request.method == 'POST':
+            serializer = EmergencyIncidentReportSerializer(data=request.data, context={'request': request})
+            
+            if serializer.is_valid():
+                serializer.save(agent=request.user)
+                return Response({
+                    'success': True,
+                    'message': 'Incident report created successfully',
+                    'data': serializer.data
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid data',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+    except Exception as e:
+        logger.error(f"Error in emergency_incident_reports: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to process request'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def emergency_incident_report_detail(request, pk):
+    try:
+        # Get report with permission check
+        if request.user.user_type in ['supervisor', 'admin']:
+            report = get_object_or_404(EmergencyIncidentReport, pk=pk)
+        else:
+            report = get_object_or_404(EmergencyIncidentReport, pk=pk, agent=request.user)
+        
+        if request.method == 'GET':
+            serializer = EmergencyIncidentReportSerializer(report)
+            return Response({
+                'success': True,
+                'data': serializer.data
+            })
+        
+        elif request.method == 'PUT':
+            serializer = EmergencyIncidentReportSerializer(report, data=request.data, partial=True, context={'request': request})
+            
+            if serializer.is_valid():
+                serializer.save()
+                return Response({
+                    'success': True,
+                    'message': 'Incident report updated successfully',
+                    'data': serializer.data
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid data',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        elif request.method == 'DELETE':
+            report.delete()
+            return Response({
+                'success': True,
+                'message': 'Incident report deleted successfully'
+            }, status=status.HTTP_204_NO_CONTENT)
+                
+    except Exception as e:
+        logger.error(f"Error in emergency_incident_report_detail: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to process request'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_emergency_incident_report(request, pk):
+    try:
+        # Get report with permission check
+        if request.user.user_type in ['supervisor', 'admin']:
+            report = get_object_or_404(EmergencyIncidentReport, pk=pk)
+        else:
+            report = get_object_or_404(EmergencyIncidentReport, pk=pk, agent=request.user)
+        
+        if report.status != 'draft':
+            return Response({
+                'success': False,
+                'error': 'Report has already been submitted'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        report.status = 'submitted'
+        report.save()
+        
+        serializer = EmergencyIncidentReportSerializer(report)
+        
+        return Response({
+            'success': True,
+            'message': 'Report submitted successfully',
+            'data': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in submit_emergency_incident_report: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to submit report'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def approve_emergency_incident_report(request, pk):
+    try:
+        if request.user.user_type not in ['supervisor', 'admin']:
+            return Response({
+                'success': False,
+                'error': 'Permission denied'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        report = get_object_or_404(EmergencyIncidentReport, pk=pk)
+        
+        if report.status != 'submitted':
+            return Response({
+                'success': False,
+                'error': 'Report must be in submitted status to approve'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        report.status = 'approved'
+        report.save()
+        
+        serializer = EmergencyIncidentReportSerializer(report)
+        
+        return Response({
+            'success': True,
+            'message': 'Report approved successfully',
+            'data': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in approve_emergency_incident_report: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to approve report'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_emergency_incident_reports(request):
+    try:
+        reports = EmergencyIncidentReport.objects.filter(agent=request.user).order_by('-created_at')
+        
+        serializer = EmergencyIncidentReportListSerializer(reports, many=True)
+        
+        return Response({
+            'success': True,
+            'count': len(serializer.data),
+            'data': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in my_emergency_incident_reports: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to fetch reports'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def emergency_incident_reports_stats(request):
+    try:
+        if request.user.user_type in ['controller','admin']:
+            reports = EmergencyIncidentReport.objects.all()
+        else:
+            reports = EmergencyIncidentReport.objects.filter(agent=request.user)
+        
+        stats = {
+            'total': reports.count(),
+            'draft': reports.filter(status='draft').count(),
+            'submitted': reports.filter(status='submitted').count(),
+            'approved': reports.filter(status='approved').count(),
+            'by_type': list(reports.values('incident_type').annotate(count=Count('id'))),
+            'by_severity': list(reports.values('severity').annotate(count=Count('id'))),
+        }
+        
+        return Response({
+            'success': True,
+            'data': stats
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in emergency_incident_reports_stats: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to fetch statistics'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def emergency_report_evidence(request):
+    try:
+        if request.method == 'GET':
+            report_id = request.GET.get('report_id')
+            
+            if report_id:
+                evidence = EmergencyReportEvidence.objects.filter(report_id=report_id, report__agent=request.user)
+            else:
+                evidence = EmergencyReportEvidence.objects.filter(report__agent=request.user)
+            
+            evidence = evidence.order_by('-uploaded_at')
+            
+            serializer = EmergencyReportEvidenceSerializer(evidence, many=True)
+            
+            return Response({
+                'success': True,
+                'count': len(serializer.data),
+                'data': serializer.data
+            })
+        
+        elif request.method == 'POST':
+            serializer = EmergencyReportEvidenceSerializer(data=request.data, context={'request': request})
+            
+            if serializer.is_valid():
+                report_id = request.data.get('report')
+                
+                # Verify the report belongs to the current user
+                try:
+                    report = EmergencyIncidentReport.objects.get(id=report_id, agent=request.user)
+                    serializer.save(report=report)
+                    
+                    return Response({
+                        'success': True,
+                        'message': 'Evidence uploaded successfully',
+                        'data': serializer.data
+                    }, status=status.HTTP_201_CREATED)
+                    
+                except EmergencyIncidentReport.DoesNotExist:
+                    return Response({
+                        'success': False,
+                        'error': 'Report not found or access denied'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                    
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid data',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+    except Exception as e:
+        logger.error(f"Error in emergency_report_evidence: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to process request'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_emergency_report_evidence(request, pk):
+    try:
+        evidence = get_object_or_404(EmergencyReportEvidence, pk=pk)
+        
+        evidence.delete()
+        
+        return Response({
+            'success': True,
+            'message': 'Evidence deleted successfully'
+        }, status=status.HTTP_204_NO_CONTENT)
+        
+    except Exception as e:
+        logger.error(f"Error in delete_emergency_report_evidence: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to delete evidence'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

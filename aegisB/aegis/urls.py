@@ -76,21 +76,38 @@ urlpatterns = [
 
     # emergecy alert
 
-
+    path('emergency/', views.get_emergecy_list, name='get-emergecy-list'),
+    path('emergency/active/', views.get_active_emergencies, name='active-emergencies'),
     path('emergency/activate/', views.activate_emergency, name='activate-emergency'),
     path('emergency/deactivate/', views.deactivate_emergency, name='deactivate-emergency'),
     path('emergency/update-location/', views.update_location, name='update-location'),
     path('emergency/upload-media/', views.upload_media, name='upload-media'),
-    path('emergency/<str:alert_id>/', views.get_emergency_details, name='emergency-details'),
-    path('emergency/updates/<str:alert_id>/', views.get_emergency_updates, name='emergency-updates'),
-    path('emergency/active/', views.get_active_emergencies, name='active-emergencies'),
+    path('emergency/get-media/', views.get_media, name='get-media'),
     path('emergency/history/', views.get_emergency_history, name='emergency-history'),
     path('emergency/statistics/', views.emergency_statistics, name='emergency-statistics'),
+    path('emergency/assign-responder/', views.assign_responder, name='responder-assign'),
+
+    path('emergency/<str:alert_id>/', views.get_emergency_details, name='emergency-details'),
+    path('emergency/<str:alert_id>/map-data/', views.get_emergency_map_data, name='emergency-map-data'),
+    path('emergency/<str:alert_id>/available-responders/', views.get_available_responders, name='available-responders'),
+    path('emergency/<str:alert_id>/notified-responder/', views.list_emergency_responses, name='list-emergency-responses'),
+    path('emergency/updates/<str:alert_id>/', views.get_emergency_updates, name='emergency-updates'),
+
+    path('emergency-response/incident-reports/', views.emergency_incident_reports, name='emergency-incident-reports'),
+    path('emergency-response/incident-reports/my-reports/', views.my_emergency_incident_reports, name='my-emergency-incident-reports'),
+    path('emergency-response/incident-reports/stats/', views.emergency_incident_reports_stats, name='emergency-incident-reports-stats'),
+    path('emergency-response/incident-reports/<int:pk>/', views.emergency_incident_report_detail, name='emergency-incident-report-detail'),
+    path('emergency-response/incident-reports/<int:pk>/submit/', views.submit_emergency_incident_report, name='submit-emergency-incident-report'),
+    path('emergency-response/incident-reports/<int:pk>/approve/', views.approve_emergency_incident_report, name='approve-emergency-incident-report'),
     
+    path('emergency-response/report-evidence/', views.emergency_report_evidence, name='emergency-report-evidence'),
+    path('emergency-response/report-evidence/<int:pk>/', views.delete_emergency_report_evidence, name='delete-emergency-report-evidence'),
+
     # Responder Management
     path('responder/assignments/', views.get_responder_assignments, name='responder-assignments'),
     path('responder/update-status/', views.update_response_status, name='update-response-status'),
-    
+
+
     # Notifications
     path('notifications/', views.get_user_notifications, name='user-notifications'),
     path('notifications/<int:notification_id>/read/', views.mark_notification_read, name='mark-notification-read'),

@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from .models import (
-    EmergencyAlert, EmergencyNotification, EmergencyResponse, IncidentUpdate, LocationUpdate, MediaCapture, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
+    EmergencyAlert, EmergencyIncidentReport, EmergencyNotification, EmergencyReportEvidence, EmergencyResponse, IncidentUpdate, LocationUpdate, MediaCapture, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
     LearningResource, SafetyCheckIn, SafetyCheckSettings, UserProgress, UserQuizAttempt,EmergencyContact,
     IncidentReport, IncidentMedia, VideoEvidence,
 
@@ -515,6 +515,10 @@ class EmergencyAlertDetailSerializer(EmergencyAlertSerializer):
     responses = EmergencyResponseSerializer(many=True, read_only=True)
     emergency_contacts = serializers.SerializerMethodField()
     
+    class Meta(EmergencyAlertSerializer.Meta):
+        fields = "__all__"
+
+
     def get_emergency_contacts(self, obj):
         # Use your existing EmergencyContact model
         contacts = EmergencyContact.objects.filter(
@@ -522,3 +526,87 @@ class EmergencyAlertDetailSerializer(EmergencyAlertSerializer):
             is_emergency_contact=True
         ).order_by('-is_primary', 'name')
         return EmergencyContactSerializer(contacts, many=True).data
+    
+
+
+class EmergencyReportEvidenceSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = EmergencyReportEvidence
+        fields = ['id', 'file', 'file_type', 'uploaded_at', 'file_url']
+        read_only_fields = ['id', 'uploaded_at']
+    
+    def get_file_url(self, obj):
+        if obj.file:
+            return obj.file.url
+        return None
+
+class EmergencyIncidentReportSerializer(serializers.ModelSerializer):
+    evidence = EmergencyReportEvidenceSerializer(many=True, read_only=True)
+    agent_name = serializers.CharField(source='agent.get_full_name', read_only=True)
+    
+    # Make emergency field accept both PK and alert_id string
+    emergency = serializers.CharField(required=False)
+    alert_id = serializers.CharField(write_only=True, required=False)
+    
+    class Meta:
+        model = EmergencyIncidentReport
+        fields = [
+            'id', 'emergency', 'agent', 'agent_name', 'incident_type', 
+            'severity', 'location', 'victim_condition', 'victim_gender', 
+            'victim_age', 'is_anonymous', 'perpetrator_info', 'actions_taken',
+            'police_involved', 'medical_assistance', 'ngo_involved', 
+            'evidence_collected', 'additional_notes', 'follow_up_required', 
+            'follow_up_details', 'status', 'created_at', 'submitted_at', 
+            'updated_at', 'evidence', 'alert_id'
+        ]
+        read_only_fields = ['id', 'agent', 'created_at', 'submitted_at', 'updated_at']
+    
+    def create(self, validated_data):
+        # Handle alert_id lookup
+        alert_id = validated_data.pop('alert_id', None)
+        emergency_str = validated_data.pop('emergency', None)
+        
+        # Use alert_id if provided, otherwise use emergency field
+        lookup_value = alert_id or emergency_str
+        
+        if not lookup_value:
+            raise serializers.ValidationError({
+                'alert_id': 'Either emergency or alert_id must be provided'
+            })
+        
+        try:
+            # Find emergency by alert_id
+            emergency_obj = EmergencyAlert.objects.get(alert_id=lookup_value)
+            validated_data['emergency'] = emergency_obj
+        except EmergencyAlert.DoesNotExist:
+            raise serializers.ValidationError({
+                'alert_id': f'Emergency with ID {lookup_value} does not exist'
+            })
+        
+        validated_data['agent'] = self.context['request'].user
+        return super().create(validated_data)
+
+class EmergencyIncidentReportListSerializer(serializers.ModelSerializer):
+    emergency_alert_id = serializers.CharField(source='emergency.alert_id', read_only=True)
+    agent_name = serializers.CharField(source='agent.get_full_name', read_only=True)
+    
+    class Meta:
+        model = EmergencyIncidentReport
+        fields = [
+            'id', 'emergency_alert_id', 'agent_name', 'incident_type',
+            'severity', 'location', 'victim_condition', 'status', 'created_at'
+        ]
+
+class EmergencyIncidentReportSubmitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmergencyIncidentReport
+        fields = ['status']
+    
+    def update(self, instance, validated_data):
+        if validated_data.get('status') == 'submitted':
+            instance.status = 'submitted'
+            instance.submitted_at = timezone.now()
+            instance.save()
+        return instance

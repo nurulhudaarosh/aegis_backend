@@ -157,23 +157,60 @@ def get_responders(request):
     serializer = ResponderSerializer(responders, many=True)
     return Response(serializer.data)
 
+# @api_view(['PATCH'])
+# @permission_classes([IsAuthenticated])
+# def update_responder_status(request, responder_id):
+#     """Update responder status (available, busy, offline)"""
+#     try:
+#         responder = CustomUser.objects.get(id=responder_id, user_type='agent')
+#     except CustomUser.DoesNotExist:
+#         return Response({'error': 'Responder not found'}, status=404)
+    
+#     serializer = ResponderSerializer(responder, data=request.data, partial=True)
+#     if serializer.is_valid():
+#         serializer.save()
+#         return Response({
+#             'responder': serializer.data,
+#             'message': 'Status updated successfully'
+#         })
+    
+#     return Response(serializer.errors, status=400)
+
+
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 def update_responder_status(request, responder_id):
-    """Update responder status (available, busy, offline)"""
+    """Update responder status (available, busy, offline) and handle location fields accordingly"""
     try:
         responder = CustomUser.objects.get(id=responder_id, user_type='agent')
     except CustomUser.DoesNotExist:
         return Response({'error': 'Responder not found'}, status=404)
-    
-    serializer = ResponderSerializer(responder, data=request.data, partial=True)
+
+    # Extract status before validation
+    new_status = request.data.get('status')
+
+    # Update location if available/busy; otherwise clear them
+    if new_status in ['available', 'busy']:
+        location_data = {
+            'location': request.data.get('location', responder.location),
+            'latitude': request.data.get('latitude', responder.latitude),
+            'longitude': request.data.get('longitude', responder.longitude),
+        }
+    else:  # status == 'offline' or anything else invalid
+        location_data = {'location': '', 'latitude': None, 'longitude': None}
+
+    # Merge updates into request data
+    mutable_data = request.data.copy()
+    mutable_data.update(location_data)
+
+    serializer = ResponderSerializer(responder, data=mutable_data, partial=True)
     if serializer.is_valid():
         serializer.save()
         return Response({
             'responder': serializer.data,
-            'message': 'Status updated successfully'
+            'message': f"Status updated to '{new_status}' successfully"
         })
-    
+
     return Response(serializer.errors, status=400)
 
 

@@ -164,3 +164,6 @@ admin.site.register(models.MediaCapture)
 admin.site.register(models.EmergencyResponse)
 admin.site.register(models.DeactivationAttempt)
 admin.site.register(models.EmergencyNotification)
+admin.site.register(models.EmergencyReportEvidence)
+admin.site.register(models.EmergencyIncidentReport)
+

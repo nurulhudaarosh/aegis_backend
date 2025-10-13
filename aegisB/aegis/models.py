@@ -578,6 +578,7 @@ class EmergencyResponse(models.Model):
     RESPONSE_STATUS = [
         ('notified', 'Notified'),
         ('dispatched', 'Dispatched'),
+        ('accepted', 'Accepted'),
         ('en_route', 'En Route'),
         ('on_scene', 'On Scene'),
         ('completed', 'Completed'),
@@ -652,3 +653,120 @@ class EmergencyNotification(models.Model):
     
     def __str__(self):
         return f"{self.notification_type} - {self.user.email}"
+    
+
+
+
+class EmergencyIncidentReport(models.Model):
+    INCIDENT_TYPES = [
+        ('harassment', 'Harassment'),
+        ('robbery', 'Robbery'), 
+        ('stalking', 'Stalking'),
+        ('assault', 'Assault'),
+        ('other', 'Other'),
+    ]
+    
+    SEVERITY_LEVELS = [
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+        ('critical', 'Critical'),
+    ]
+    
+    VICTIM_CONDITIONS = [
+        ('safe', 'Safe & Stable'),
+        ('injured', 'Minor Injuries'),
+        ('serious', 'Serious Injuries'),
+        ('traumatized', 'Emotional Trauma'),
+        ('unknown', 'Condition Unknown'),
+    ]
+    
+    # Core relationships
+    emergency = models.ForeignKey(
+        'EmergencyAlert', 
+        on_delete=models.CASCADE,
+        related_name='emergency_incident_reports'
+    )
+    agent = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='emergency_incident_reports'
+    )
+    
+    # Basic information
+    incident_type = models.CharField(
+        max_length=20,
+        choices=INCIDENT_TYPES,
+        default='harassment'
+    )
+    severity = models.CharField(
+        max_length=20,
+        choices=SEVERITY_LEVELS, 
+        default='medium'
+    )
+    location = models.TextField()
+    
+    # Victim details
+    victim_condition = models.CharField(
+        max_length=20,
+        choices=VICTIM_CONDITIONS,
+        default='unknown'
+    )
+    victim_gender = models.CharField(max_length=20, blank=True)
+    victim_age = models.IntegerField(null=True, blank=True)
+    is_anonymous = models.BooleanField(default=False)
+    
+    # Incident details
+    perpetrator_info = models.TextField(null=True, blank=True)
+    actions_taken = models.TextField(null=True, blank=True)
+    
+    # Services involved
+    police_involved = models.BooleanField(default=False)
+    medical_assistance = models.BooleanField(default=False) 
+    ngo_involved = models.BooleanField(default=False)
+    
+    # Evidence
+    evidence_collected = models.BooleanField(default=False)
+    additional_notes = models.TextField(blank=True)
+    
+    # Follow-up
+    follow_up_required = models.BooleanField(default=False)
+    follow_up_details = models.TextField(blank=True)
+    
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('draft', 'Draft'),
+            ('submitted', 'Submitted'),
+            ('approved', 'Approved'),
+        ],
+        default='draft'
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(default=timezone.now)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Incident Report - {self.emergency.alert_id}"
+
+class EmergencyReportEvidence(models.Model):
+    report = models.ForeignKey(
+        EmergencyIncidentReport,
+        on_delete=models.CASCADE,
+        related_name='emergency_report_evidence'
+    )
+    file = models.FileField(upload_to='incident_evidence/%Y/%m/%d/')
+    file_type = models.CharField(max_length=10)
+    uploaded_at = models.DateTimeField(default=timezone.now)
+    
+    class Meta:
+        ordering = ['-uploaded_at']
+    
+    def __str__(self):
+        return f"Evidence for {self.report.emergency.alert_id}"
