@@ -129,7 +129,7 @@ class ExternalLink(models.Model):
 class QuizQuestion(models.Model):
     resource = models.ForeignKey(LearningResource, on_delete=models.CASCADE, related_name='quiz_questions')
     question = models.TextField()
-    explanation = models.TextField(help_text="Explanation shown after answering")
+    explanation = models.TextField(help_text="Explanation shown after answering", blank=True, null=True)
     order = models.IntegerField(default=0)
 
     class Meta:
@@ -456,7 +456,7 @@ class VideoEvidence(models.Model):
         return self.user == user
     
 
-# emergecy alert
+# emergency alert
 
 
 def generate_alert_id():
@@ -491,6 +491,7 @@ class EmergencyAlert(models.Model):
     initial_address = models.TextField(blank=True)
     
     # Timestamps
+    # created_at = models.DateTimeField(auto_now_add=True)
     activated_at = models.DateTimeField(default=timezone.now)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
@@ -632,14 +633,18 @@ class EmergencyNotification(models.Model):
         ('location_update', 'Location Update'),
         ('media_uploaded', 'Media Uploaded'),
         ('alert_resolved', 'Alert Resolved'),
+        ('alert_test', 'Test Alert'),
+        ('safety_check', 'Safety Check'),
+        ('update_profile', 'Profile Updated'),
     ]
     
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    by_user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     alert = models.ForeignKey(EmergencyAlert, on_delete=models.CASCADE, null=True, blank=True)
     notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
-    title = models.CharField(max_length=200)
-    message = models.TextField()
-    is_read = models.BooleanField(default=False)
+    title = models.CharField(max_length=200,null=True, blank=True)
+    message = models.TextField(null=True, blank=True)
+    is_read = models.BooleanField(default=False,null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     
     # Additional data
@@ -770,3 +775,61 @@ class EmergencyReportEvidence(models.Model):
     
     def __str__(self):
         return f"Evidence for {self.report.emergency.alert_id}"
+    
+
+
+
+# safe route
+
+
+class SafeLocation(models.Model):
+    LOCATION_TYPES = [
+        ('home', 'Home'),
+        ('work', 'Work'),
+        ('education', 'Education'),
+        ('family', 'Family'),
+        ('other', 'Other'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='safe_locations')
+    name = models.CharField(max_length=100)
+    address = models.TextField()
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    location_type = models.CharField(max_length=20, choices=LOCATION_TYPES, default='other')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} - {self.user.email}"
+
+class SafeRoute(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='safe_routes')
+    destination = models.CharField(max_length=255)
+    route_data = models.JSONField(default=dict)
+    avoided_locations = models.JSONField(default=list)
+    is_active = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Route to {self.destination} - {self.user.email}"
+
+class NavigationSession(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='navigation_sessions')
+    route = models.ForeignKey(SafeRoute, on_delete=models.CASCADE, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    live_location_updates = models.JSONField(default=list)
+    
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"Navigation - {self.user.email} - {self.started_at}"

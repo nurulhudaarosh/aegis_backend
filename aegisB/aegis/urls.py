@@ -94,6 +94,7 @@ urlpatterns = [
     path('emergency/updates/<str:alert_id>/', views.get_emergency_updates, name='emergency-updates'),
 
     path('emergency-response/incident-reports/', views.emergency_incident_reports, name='emergency-incident-reports'),
+    path('emergency-response/incident-reports-list/<str:alert_id>/', views.emergency_incident_reports_list, name='emergency-incident-reports-list'),
     path('emergency-response/incident-reports/my-reports/', views.my_emergency_incident_reports, name='my-emergency-incident-reports'),
     path('emergency-response/incident-reports/stats/', views.emergency_incident_reports_stats, name='emergency-incident-reports-stats'),
     path('emergency-response/incident-reports/<int:pk>/', views.emergency_incident_report_detail, name='emergency-incident-report-detail'),
@@ -103,14 +104,28 @@ urlpatterns = [
     path('emergency-response/report-evidence/', views.emergency_report_evidence, name='emergency-report-evidence'),
     path('emergency-response/report-evidence/<int:pk>/', views.delete_emergency_report_evidence, name='delete-emergency-report-evidence'),
 
+    path('emergency-history-location/', views.get_emergency_history_location, name='emergency-history-location'),
+
     # Responder Management
     path('responder/assignments/', views.get_responder_assignments, name='responder-assignments'),
     path('responder/update-status/', views.update_response_status, name='update-response-status'),
 
 
     # Notifications
-    path('notifications/', views.get_user_notifications, name='user-notifications'),
     path('notifications/<int:notification_id>/read/', views.mark_notification_read, name='mark-notification-read'),
+    path('notifications/', views.get_user_notifications, name='user-notifications'),
+
+
+    # Safe Locations
+    path('safe-locations/', views.get_safe_locations, name='safe-locations'),
+    path('safe-locations/create/', views.create_safe_location, name='create-safe-location'),
+    path('find-safe-route/', views.find_safe_route, name='find-safe-route'),
+    path('start-navigation/', views.start_navigation, name='start-navigation'),
+    path('route-geojson/', views.get_route_geojson, name='route-geojson'),
+    path('reverse-geocode/', views.reverse_geocode, name='reverse-geocode'),
+    
+
+
 
 
 ]

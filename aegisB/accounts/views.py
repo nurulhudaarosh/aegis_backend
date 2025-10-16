@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import IsAuthenticated
-from django.contrib.auth import update_session_auth_hash, login
+from django.contrib.auth import update_session_auth_hash, login, logout
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -52,6 +52,19 @@ def login_user(request):
         }, status=status.HTTP_200_OK)
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def logout_user(request):
+    try:
+        logout(request)
+        return Response({
+            'message': 'Logout successful'
+        }, status=status.HTTP_200_OK)
+    except:
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
 
 
 @api_view(['GET', 'PUT'])

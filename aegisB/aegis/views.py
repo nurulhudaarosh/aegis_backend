@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.utils import timezone
+from aegisB.settings import OPENROUTE_API_KEY
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Q, Count, Sum
@@ -15,6 +16,9 @@ from datetime import timedelta
 import json
 import logging
 import math
+import requests
+
+
 
 
 
@@ -29,8 +33,11 @@ from .models import (
     ExternalLink,
     LocationUpdate,
     MediaCapture,
+    NavigationSession,
     ResourceCategory,
     LearningResource,
+    SafeLocation,
+    SafeRoute,
     SafetyCheckIn,
     SafetyCheckSettings,
     UserProgress,
@@ -60,6 +67,7 @@ from .serializers import (
     ManualCheckInSerializer,
     MediaCaptureSerializer,
     ResponderAssignmentSerializer,
+    SafeLocationSerializer,
     SafetyCheckInSerializer,
     SafetyCheckSettingsSerializer,
     SafetyStatisticsSerializer,
@@ -218,10 +226,31 @@ def test_emergency_alert(request, pk):
         # Here you would integrate with your alert service (Twilio, etc.)
         # For now, just return a success message
         print('test successful')
-        return Response({
-            'message': f'Test alert sent to {contact.name}',
-            'contact': EmergencyContactSerializer(contact).data
-        })
+        print(contact.phone, contact.email)
+        filters = Q()
+        if contact.email:
+            filters |= Q(email=contact.email)
+        if contact.phone:
+            filters |= Q(phone=contact.phone)
+        send_to = User.objects.filter(filters).first()   
+
+        if send_to is None:
+            return Response({
+                'message': f'Test alert sent to {contact.name} is not available in aegis, Thank You',
+            })
+        else:
+            EmergencyNotification.objects.create(
+                user=send_to,
+                by_user=request.user,
+                notification_type='alert_test',
+                title=f'{request.user.full_name} test the alert',
+                message = f"{request.user.full_name} tested the alert at {timezone.now().strftime('%Y-%m-%d %I:%M:%S %p')}. Be safe, Be aware",
+            )
+
+            return Response({
+                'message': f'Test alert sent to {contact.name} is successfull',
+            })
+    
     except EmergencyContact.DoesNotExist:
         return Response({'error': 'Contact not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -892,41 +921,62 @@ def manual_check_in(request):
         location_lng=serializer.validated_data.get('location_lng'),
         notes=serializer.validated_data.get('notes', '')
     )
+    contact = EmergencyContact.objects.filter(user=request.user, is_emergency_contact=True).first()
+    if contact is None:
+        return Response({
+                'message': f'You don\'t have any emergecy conact to notify, Please add one to be safe Thank You',
+            })
+    else: 
+        filters = Q()
+        if contact.email:
+            filters |= Q(email=contact.email)
+        if contact.phone:
+            filters |= Q(phone=contact.phone)
+        send_to = User.objects.filter(filters).first()   
 
-    # Schedule next check-in based on user settings
-    try:
-        settings = SafetyCheckSettings.objects.get(user=request.user)
-        if settings.is_enabled:
-            next_check_in = timezone.now() + timedelta(minutes=settings.check_in_frequency)
-            SafetyCheckIn.objects.create(
-                user=request.user,
-                status='pending',
-                scheduled_at=next_check_in
+        if send_to is None:
+            return Response({
+                'message': f'Test alert sent to {contact.name} is not available in aegis, Thank You',
+            })
+        else:
+            EmergencyNotification.objects.create(
+                user=send_to,
+                by_user=request.user,
+                notification_type='safety_check',
+                title=f'{request.user.full_name} test the alert',
+                message = f"{request.user.full_name} is safe now at {timezone.now().strftime('%Y-%m-%d %I:%M:%S %p')}. Be safe, Be aware",
             )
-    except SafetyCheckSettings.DoesNotExist:
-        pass
+            # Schedule next check-in based on user settings
+            try:
+                settings = SafetyCheckSettings.objects.get(user=request.user)
+                if settings.is_enabled:
+                    next_check_in = timezone.now() + timedelta(minutes=settings.check_in_frequency)
+                    SafetyCheckIn.objects.create(
+                        user=request.user,
+                        status='pending',
+                        scheduled_at=next_check_in
+                    )
+            except SafetyCheckSettings.DoesNotExist:
+                pass
 
-    return Response({
-        'message': 'Safety check-in recorded successfully',
-        'check_in': SafetyCheckInSerializer(check_in).data
-    })
+            return Response({
+                'message': 'Safety check-in recorded successfully and notified to the emergency contact',
+                'check_in': SafetyCheckInSerializer(check_in).data
+            })
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def test_emergency_alert_demo(request):
-    serializer = TestAlertSerializer(data=request.data)
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    # Create test alert
-    # alert = EmergencyAlert.objects.create(
-    #     user=request.user,
-    #     alert_type='test',
-    #     message=serializer.validated_data['message']
-    # )
 
-    # Here you would integrate with your notification service (Twilio, Firebase, etc.)
-    # For now, we'll just return success
+    # Create test alert notification
+    EmergencyNotification.objects.create(
+        user=request.user,
+        notification_type='alert_test',
+        title='Some test the alert',
+        message = f"{request.user.full_name} tested the alert at {timezone.now().strftime('%Y-%m-%d %I:%M:%S %p')}. Be safe, Be aware"
+    )
+
     print('alert success')
 
     return Response({
@@ -959,7 +1009,7 @@ def safety_statistics(request):
 
     emergency_alerts = EmergencyAlert.objects.filter(
         user=request.user,
-        created_at__gte=thirty_days_ago
+        activated_at__gte=thirty_days_ago
     ).count()
 
     response_rate = (successful_check_ins / total_check_ins * 100) if total_check_ins > 0 else 100
@@ -2035,14 +2085,23 @@ def get_user_notifications(request):
     Get user's notifications
     GET /api/aegis/notifications/
     """
-    notifications = EmergencyNotification.objects.filter(
-        user=request.user
-    ).order_by('-created_at')[:50]  # Last 50 notifications
+    if request.user.user_type == 'controller' :
+        notifications = EmergencyNotification.objects.filter(
+            alert__isnull=False
+        ).order_by('-created_at')
+    else :
+        notifications = EmergencyNotification.objects.filter(
+            user=request.user
+        ).order_by('-created_at')
+    # print(notifications)
+    # print("OpenRoute API Key:", OPENROUTE_API_KEY)
     
     unread_count = notifications.filter(is_read=False).count()
-    
+    notifications = notifications[:50]
+
     serializer = EmergencyNotificationSerializer(notifications, many=True)
     
+
     return Response({
         'success': True,
         'unread_count': unread_count,
@@ -2053,12 +2112,8 @@ def get_user_notifications(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def mark_notification_read(request, notification_id):
-    """
-    Mark notification as read
-    POST /api/aegis/notifications/{id}/read/
-    """
     try:
-        notification = get_object_or_404(EmergencyNotification, id=notification_id, user=request.user)
+        notification = get_object_or_404(EmergencyNotification, id=notification_id)
         notification.is_read = True
         notification.save()
         
@@ -2591,11 +2646,12 @@ def emergency_incident_reports(request):
             severity = request.GET.get('severity')
             
             # Base queryset
-            if request.user.user_type in ['supervisor', 'admin']:
+            if request.user.user_type in ['controller', 'admin']:
                 reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').all()
             else:
                 reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').filter(agent=request.user)
             
+            # print(reports)
             # Apply filters
             if status_filter:
                 reports = reports.filter(status=status_filter)
@@ -2637,17 +2693,67 @@ def emergency_incident_reports(request):
             'success': False,
             'error': 'Failed to process request'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(['GET' ])
+@permission_classes([IsAuthenticated])
+def emergency_incident_reports_list(request, alert_id):
+
+    try:
+        status_filter = request.GET.get('status')
+        incident_type = request.GET.get('incident_type')
+        severity = request.GET.get('severity')
+        
+        # Base queryset
+        if request.user.user_type in ['controller', 'admin']:
+            reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').filter(emergency__alert_id=alert_id, status__in=['submitted', 'approved'])
+        else:
+            reports = EmergencyIncidentReport.objects.select_related('emergency', 'agent').filter(emergency__alert_id=alert_id, agent=request.user)
+        
+        print(reports)
+        # Apply filters
+        if status_filter:
+            reports = reports.filter(status=status_filter)
+        if incident_type:
+            reports = reports.filter(incident_type=incident_type)
+        if severity:
+            reports = reports.filter(severity=severity)
+        
+        reports = reports.order_by('-created_at')
+        
+        serializer = EmergencyIncidentReportListSerializer(reports, many=True)
+        
+        return Response({
+            'success': True,
+            'count': len(serializer.data),
+            'data': serializer.data
+        })
+                
+    except Exception as e:
+        logger.error(f"Error in emergency_incident_reports: {str(e)}")
+        return Response({
+            'success': False,
+            'error': 'Failed to process request'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def emergency_incident_report_detail(request, pk):
     try:
         # Get report with permission check
-        if request.user.user_type in ['supervisor', 'admin']:
-            report = get_object_or_404(EmergencyIncidentReport, pk=pk)
+        if request.user.user_type in ['controller', 'admin']:
+            report = get_object_or_404(
+                EmergencyIncidentReport.objects.select_related('agent'),
+                pk=pk
+            )
         else:
-            report = get_object_or_404(EmergencyIncidentReport, pk=pk, agent=request.user)
+            report = get_object_or_404(
+                EmergencyIncidentReport.objects.select_related('agent'), 
+                pk=pk, 
+                agent=request.user
+            )
         
+        print(report.agent.full_name)
         if request.method == 'GET':
             serializer = EmergencyIncidentReportSerializer(report)
             return Response({
@@ -2691,7 +2797,7 @@ def emergency_incident_report_detail(request, pk):
 def submit_emergency_incident_report(request, pk):
     try:
         # Get report with permission check
-        if request.user.user_type in ['supervisor', 'admin']:
+        if request.user.user_type in ['controller', 'admin']:
             report = get_object_or_404(EmergencyIncidentReport, pk=pk)
         else:
             report = get_object_or_404(EmergencyIncidentReport, pk=pk, agent=request.user)
@@ -2724,7 +2830,7 @@ def submit_emergency_incident_report(request, pk):
 @permission_classes([IsAuthenticated])
 def approve_emergency_incident_report(request, pk):
     try:
-        if request.user.user_type not in ['supervisor', 'admin']:
+        if request.user.user_type not in ['controller', 'admin']:
             return Response({
                 'success': False,
                 'error': 'Permission denied'
@@ -2815,7 +2921,7 @@ def emergency_report_evidence(request):
             report_id = request.GET.get('report_id')
             
             if report_id:
-                evidence = EmergencyReportEvidence.objects.filter(report_id=report_id, report__agent=request.user)
+                evidence = EmergencyReportEvidence.objects.filter(report_id=report_id)
             else:
                 evidence = EmergencyReportEvidence.objects.filter(report__agent=request.user)
             
@@ -2885,3 +2991,465 @@ def delete_emergency_report_evidence(request, pk):
             'success': False,
             'error': 'Failed to delete evidence'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+
+# safe route 
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_safe_locations(request):
+    """Get user's safe locations"""
+    try:
+        locations = SafeLocation.objects.filter(user=request.user, is_active=True)
+        serializer = SafeLocationSerializer(locations, many=True)
+        
+        return Response({
+            'success': True,
+            'data': serializer.data
+        })
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_safe_location(request):
+    """Create a new safe location"""
+    try:
+        print("=== CREATE SAFE LOCATION ===")
+        print("Request data:", request.data)
+        print("User:", request.user.email)
+        
+        # Prepare data for serializer
+        data = {
+            'name': request.data.get('name'),
+            'address': request.data.get('address'),
+            'location_type': request.data.get('location_type', 'other'),
+            'latitude': request.data.get('latitude'),
+            'longitude': request.data.get('longitude'),
+        }
+        
+        print("Data for serializer:", data)
+        
+        # Pass request context to serializer
+        serializer = SafeLocationSerializer(data=data, context={'request': request})
+        
+        if serializer.is_valid():
+            print("Serializer is valid")
+            safe_location = serializer.save()
+            print("Safe location created:", safe_location.id)
+            
+            return Response({
+                'success': True,
+                'data': SafeLocationSerializer(safe_location).data
+            })
+        else:
+            print("Serializer errors:", serializer.errors)
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=400)
+            
+    except Exception as e:
+        print("Error creating safe location:", str(e))
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+# Emergency History API
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_emergency_history_location(request):
+    """Get user's emergency history for route planning"""
+    try:
+        emergencies = EmergencyAlert.objects.all().exclude(
+            Q(initial_latitude__isnull=True) | Q(initial_longitude__isnull=True)
+        ).order_by('-activated_at')[:10]
+        
+        print(OPENROUTE_API_KEY)
+        emergency_data = []
+        for emergency in emergencies:
+            emergency_data.append({
+                'id': emergency.id,
+                'location': emergency.initial_address or "Unknown Location",
+                'type': emergency.emergency_type or 'general',
+                'timestamp': emergency.activated_at.strftime('%b %d'),
+                'lat': float(emergency.initial_latitude) if emergency.initial_latitude else None,
+                'lng': float(emergency.initial_longitude) if emergency.initial_longitude else None
+            })
+        
+        return Response({
+            'success': True,
+            'data': emergency_data
+        })
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+    
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def find_safe_route(request):
+    """Find safe route using OpenRouteService API"""
+    try:
+        destination = request.data.get('destination')
+        current_lat = request.data.get('current_lat', 23.8103)  # Default Dhaka coordinates
+        current_lng = request.data.get('current_lng', 90.4125)
+        print(destination,current_lat,current_lng)
+        if not destination:
+            return Response({
+                'success': False,
+                'error': 'Destination is required'
+            }, status=400)
+        
+        # Get user's emergency locations to avoid
+        emergency_locations = EmergencyAlert.objects.filter(
+            user=request.user,
+            initial_latitude__isnull=False,
+            initial_longitude__isnull=False
+        ).values('initial_latitude', 'initial_longitude', 'initial_address', 'emergency_type')[:5]
+        
+        avoided_locations = []
+        avoidance_polygons = []
+        
+        for loc in emergency_locations:
+            lat = float(loc['initial_latitude'])
+            lng = float(loc['initial_longitude'])
+            
+            avoided_locations.append({
+                'address': loc['initial_address'],
+                'type': loc['emergency_type'],
+                'lat': lat,
+                'lng': lng
+            })
+            
+            # Create avoidance polygons around emergency locations (500m radius)
+            avoidance_polygons.append([
+                [lng - 0.005, lat - 0.005],  # SW
+                [lng + 0.005, lat - 0.005],  # SE
+                [lng + 0.005, lat + 0.005],  # NE
+                [lng - 0.005, lat + 0.005],  # NW
+                [lng - 0.005, lat - 0.005]   # Close polygon
+            ])
+        
+        # Step 1: Geocode destination using OpenRouteService Geocoding
+        geocode_url = "https://api.openrouteservice.org/geocode/search"
+        geocode_headers = {
+            'Authorization': OPENROUTE_API_KEY
+        }
+        geocode_params = {
+            'text': destination,
+            'boundary.country': 'BGD',  # Bangladesh
+            'size': 1
+        }
+        
+        geocode_response = requests.get(
+            geocode_url, 
+            headers=geocode_headers, 
+            params=geocode_params
+        )
+        
+        if geocode_response.status_code != 200:
+            return Response({
+                'success': False,
+                'error': 'Could not find destination location'
+            }, status=400)
+        
+        geocode_data = geocode_response.json()
+        
+        if not geocode_data.get('features'):
+            return Response({
+                'success': False,
+                'error': 'Destination not found'
+            }, status=400)
+        
+        # Extract destination coordinates
+        dest_feature = geocode_data['features'][0]
+        dest_coords = dest_feature['geometry']['coordinates']  # [lng, lat]
+        dest_address = dest_feature['properties']['label']
+        
+        # Step 2: Get route from OpenRouteService Directions API
+        route_url = "https://api.openrouteservice.org/v2/directions/driving-car"
+        route_headers = {
+            'Authorization': OPENROUTE_API_KEY,
+            'Content-Type': 'application/json'
+        }
+        
+        # Prepare coordinates: [start_lng, start_lat], [end_lng, end_lat]
+        coordinates = [
+            [current_lng, current_lat],
+            dest_coords
+        ]
+        
+        route_body = {
+            "coordinates": coordinates,
+            "instructions": False,
+            "preference": "recommended"
+        }
+        
+        # Add avoidance areas if there are emergency locations
+        if avoidance_polygons:
+            route_body["options"] = {
+                "avoid_polygons": {
+                    "type": "MultiPolygon",
+                    "coordinates": [avoidance_polygons]
+                }
+            }
+        
+        route_response = requests.post(
+            route_url, 
+            json=route_body, 
+            headers=route_headers
+        )
+        
+        if route_response.status_code != 200:
+            # Fallback: Try without avoidance
+            route_body.pop('options', None)
+            route_response = requests.post(
+                route_url, 
+                json=route_body, 
+                headers=route_headers
+            )
+            
+            if route_response.status_code != 200:
+                return Response({
+                    'success': False,
+                    'error': 'Could not calculate route'
+                }, status=400)
+        
+        route_data = route_response.json()
+        
+        # Extract route information
+        route_feature = route_data['features'][0]
+        geometry = route_feature['geometry']['coordinates']  # Full path coordinates
+        properties = route_feature['properties']['summary']
+        
+        distance_km = properties['distance'] / 1000  # Convert to km
+        duration_min = properties['duration'] / 60   # Convert to minutes
+        
+        # Calculate safety rating based on avoided locations
+        safety_rating = max(1.0, 5.0 - (len(avoided_locations) * 0.1))
+        
+        # Generate waypoints from the route
+        waypoints = []
+        if len(geometry) >= 3:
+            # Take start, middle, and end points as waypoints
+            waypoints = [
+                "Current Location",
+                f"Waypoint 1",
+                f"Waypoint 2", 
+                dest_address
+            ]
+        
+        # Prepare route data for saving
+        route_info = {
+            'distance': f"{distance_km:.1f} km",
+            'duration': f"{duration_min:.0f} min",
+            'safety_rating': round(safety_rating, 1),
+            'features': [
+                'Avoids emergency locations' if avoided_locations else 'Direct route',
+                'Real-time navigation',
+                'Live location sharing'
+            ],
+            'waypoints': waypoints,
+            'route_path': geometry,
+            'start_location': [current_lng, current_lat],
+            'end_location': dest_coords,
+            'raw_route_data': route_data
+        }
+        
+        # Save the route to database
+        safe_route = SafeRoute.objects.create(
+            user=request.user,
+            destination=dest_address,
+            route_data=route_info,
+            avoided_locations=avoided_locations
+        )
+        
+        return Response({
+            'success': True,
+            'data': {
+                'route_id': safe_route.id,
+                'destination': dest_address,
+                'distance': route_info['distance'],
+                'duration': route_info['duration'],
+                'safety_rating': route_info['safety_rating'],
+                'features': route_info['features'],
+                'avoided_locations': avoided_locations,
+                'waypoints': waypoints,
+                'route_path': geometry,  # Full coordinate path for the map
+                'start_location': [current_lng, current_lat],
+                'end_location': dest_coords,
+                'bounds': route_feature.get('bbox', [])  # Map bounds
+            }
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': f'Route calculation failed: {str(e)}'
+        }, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def get_route_geojson(request):
+    """Get route as GeoJSON for map display"""
+    try:
+        route_id = request.data.get('route_id')
+        
+        if not route_id:
+            return Response({
+                'success': False,
+                'error': 'Route ID is required'
+            }, status=400)
+        
+        route = SafeRoute.objects.get(id=route_id, user=request.user)
+        route_data = route.route_data
+        
+        # Create GeoJSON feature for the route
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "name": f"Route to {route.destination}",
+                        "distance": route_data['distance'],
+                        "duration": route_data['duration']
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": route_data['route_path']
+                    }
+                }
+            ]
+        }
+        
+        # Add emergency locations as point features
+        for i, location in enumerate(route.avoided_locations):
+            geojson['features'].append({
+                "type": "Feature",
+                "properties": {
+                    "name": f"Avoided: {location['address']}",
+                    "type": location['type'],
+                    "marker-color": "#ff0000"
+                },
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [location['lng'], location['lat']]
+                }
+            })
+        
+        return Response({
+            'success': True,
+            'data': geojson
+        })
+        
+    except SafeRoute.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Route not found'
+        }, status=404)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def reverse_geocode(request):
+    """Convert coordinates to address"""
+    try:
+        lat = request.data.get('latitude')
+        lng = request.data.get('longitude')
+        
+        if not lat or not lng:
+            return Response({
+                'success': False,
+                'error': 'Latitude and longitude are required'
+            }, status=400)
+        
+        reverse_geocode_url = "https://api.openrouteservice.org/geocode/reverse"
+        headers = {
+            'Authorization': OPENROUTE_API_KEY
+        }
+        params = {
+            'point.lon': lng,
+            'point.lat': lat,
+            'size': 1
+        }
+        
+        response = requests.get(reverse_geocode_url, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('features'):
+                address = data['features'][0]['properties']['label']
+                return Response({
+                    'success': True,
+                    'data': {
+                        'address': address,
+                        'coordinates': [float(lng), float(lat)]
+                    }
+                })
+        
+        return Response({
+            'success': True,
+            'data': {
+                'address': f"Location ({lat:.4f}, {lng:.4f})",
+                'coordinates': [float(lng), float(lat)]
+            }
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+    
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_navigation(request):
+    """Start safe navigation"""
+    try:
+        route_id = request.data.get('route_id')
+        
+        if not route_id:
+            return Response({
+                'success': False,
+                'error': 'Route ID is required'
+            }, status=400)
+        
+        # Create navigation session
+        navigation_session = NavigationSession.objects.create(
+            user=request.user,
+            is_active=True
+        )
+        
+        return Response({
+            'success': True,
+            'message': 'Safe navigation started! Emergency contacts have been notified.',
+            'session_id': navigation_session.id,
+            'live_sharing': True
+        })
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=500)

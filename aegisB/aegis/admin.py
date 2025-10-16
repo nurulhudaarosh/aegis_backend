@@ -167,3 +167,7 @@ admin.site.register(models.EmergencyNotification)
 admin.site.register(models.EmergencyReportEvidence)
 admin.site.register(models.EmergencyIncidentReport)
 
+admin.site.register(models.SafeLocation)
+admin.site.register(models.SafeRoute)
+admin.site.register(models.NavigationSession)
+

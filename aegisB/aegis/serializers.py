@@ -2,8 +2,8 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from .models import (
-    EmergencyAlert, EmergencyIncidentReport, EmergencyNotification, EmergencyReportEvidence, EmergencyResponse, IncidentUpdate, LocationUpdate, MediaCapture, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
-    LearningResource, SafetyCheckIn, SafetyCheckSettings, UserProgress, UserQuizAttempt,EmergencyContact,
+    EmergencyAlert, EmergencyIncidentReport, EmergencyNotification, EmergencyReportEvidence, EmergencyResponse, IncidentUpdate, LocationUpdate, MediaCapture, NavigationSession, ResourceCategory, ExternalLink, QuizOption, QuizQuestion,
+    LearningResource, SafeLocation, SafeRoute, SafetyCheckIn, SafetyCheckSettings, UserProgress, UserQuizAttempt,EmergencyContact,
     IncidentReport, IncidentMedia, VideoEvidence,
 
 )
@@ -544,7 +544,7 @@ class EmergencyReportEvidenceSerializer(serializers.ModelSerializer):
 
 class EmergencyIncidentReportSerializer(serializers.ModelSerializer):
     evidence = EmergencyReportEvidenceSerializer(many=True, read_only=True)
-    agent_name = serializers.CharField(source='agent.get_full_name', read_only=True)
+    agent_name = serializers.CharField(source='agent.full_name', read_only=True)
     
     # Make emergency field accept both PK and alert_id string
     emergency = serializers.CharField(required=False)
@@ -590,7 +590,7 @@ class EmergencyIncidentReportSerializer(serializers.ModelSerializer):
 
 class EmergencyIncidentReportListSerializer(serializers.ModelSerializer):
     emergency_alert_id = serializers.CharField(source='emergency.alert_id', read_only=True)
-    agent_name = serializers.CharField(source='agent.get_full_name', read_only=True)
+    agent_name = serializers.CharField(source='agent.full_name', read_only=True)
     
     class Meta:
         model = EmergencyIncidentReport
@@ -610,3 +610,90 @@ class EmergencyIncidentReportSubmitSerializer(serializers.ModelSerializer):
             instance.submitted_at = timezone.now()
             instance.save()
         return instance
+    
+
+
+
+
+
+
+# safe route
+
+class SafeLocationSerializer(serializers.ModelSerializer):
+    icon = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SafeLocation
+        fields = ['id', 'name', 'address', 'latitude', 'longitude', 'location_type', 'icon', 'created_at']
+        read_only_fields = ['id', 'created_at']
+    
+    def get_icon(self, obj):
+        icon_map = {
+            'home': '🏠',
+            'work': '🏢',
+            'education': '🎓',
+            'family': '👨‍👩‍👧',
+            'other': '📍'
+        }
+        return icon_map.get(obj.location_type, '📍')
+    
+    def create(self, validated_data):
+        # Make sure user is set from request context
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+    
+    def validate(self, data):
+        """
+        Validate the safe location data
+        """
+        # Name is required
+        if not data.get('name'):
+            raise serializers.ValidationError("Name is required")
+        
+        # Address is required
+        if not data.get('address'):
+            raise serializers.ValidationError("Address is required")
+        
+        # Location type should be one of the choices
+        valid_types = ['home', 'work', 'education', 'family', 'other']
+        if data.get('location_type') not in valid_types:
+            raise serializers.ValidationError("Invalid location type")
+        
+        return data
+
+class SafeRouteSerializer(serializers.ModelSerializer):
+    distance = serializers.SerializerMethodField()
+    duration = serializers.SerializerMethodField()
+    safety_rating = serializers.SerializerMethodField()
+    features = serializers.SerializerMethodField()
+    waypoints = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SafeRoute
+        fields = ['id', 'destination', 'distance', 'duration', 'safety_rating', 'features', 'waypoints', 'avoided_locations', 'created_at']
+        read_only_fields = ['id', 'created_at']
+    
+    def get_distance(self, obj):
+        return obj.route_data.get('distance', '12 km')
+    
+    def get_duration(self, obj):
+        return obj.route_data.get('duration', '35 min')
+    
+    def get_safety_rating(self, obj):
+        return obj.route_data.get('safety_rating', 4.8)
+    
+    def get_features(self, obj):
+        return obj.route_data.get('features', ['Avoids high-risk areas', 'Well-lit roads', 'Police patrols'])
+    
+    def get_waypoints(self, obj):
+        return obj.route_data.get('waypoints', ['Current Location', 'Safe Point 1', 'Destination'])
+    
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+class NavigationSessionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NavigationSession
+        fields = '__all__'
+        read_only_fields = ['id', 'started_at']
