@@ -51,6 +51,68 @@ class AegisViewsTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['name'], 'John Doe')
 
+    def test_create_emergency_contact(self):
+        url = reverse('emergency-contacts-list')
+        data = {'name': 'Jane Doe', 'phone': '0987654321'}
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_delete_emergency_contact(self):
+        url = reverse('delete-emergency-contact', kwargs={'pk': self.contact.pk})
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_get_non_existent_emergency_contact(self):
+        url = reverse('emergency-contact-detail', kwargs={'pk': 999})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_create_resource_category(self):
+        url = reverse('create-resource-category')
+        data = {'name': 'New Category', 'description': 'A new category for learning resources.'}
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_learning_resource(self):
+        url = reverse('create-learning-resource')
+        data = {
+            'title': 'New Resource',
+            'resource_type': 'article',
+            'category': self.category.pk,
+            'content': 'This is a new learning resource.'
+        }
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_bookmark_learning_resource(self):
+        url = reverse('toggle-bookmark', kwargs={'resource_id': self.resource.id})
+        response = self.client.post(url, {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['bookmarked'])
+
+    def test_submit_incident_report_with_missing_data(self):
+        url = reverse('submit-incident')
+        data = {
+            'incident_type': 'theft',
+            # Missing title and description
+        }
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_incident_media(self):
+        url = reverse('upload-incident-media', kwargs={'incident_id': self.incident.id})
+        # This is a simplified test that doesn't actually upload a file.
+        # In a real-world scenario, you would use a file object.
+        data = {'media_type': 'image'}
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST) # Expecting bad request due to no file
+
+    def test_update_incident_status(self):
+        url = reverse('upload-incident-status', kwargs={'incident_id': self.incident.id})
+        data = {'status': 'under_review'}
+        response = self.client.post(url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
     def test_resource_categories(self):
         url = reverse('resource-categories')
         response = self.client.get(url)
